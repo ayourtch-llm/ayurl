@@ -185,84 +185,96 @@ pub fn interactive_credential_callback(
     }
 }
 
-fn make_progress_callback() -> (impl Fn(&Progress) + Send + Sync + 'static, Arc<AtomicU64>) {
-    let last_report = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    let total_bytes = Arc::new(AtomicU64::new(0));
-    let total_bytes_ret = total_bytes.clone();
+/// Format bytes as a human-readable size string.
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
 
-    let cb = move |p: &Progress| {
-        total_bytes.store(p.bytes_transferred, Ordering::Relaxed);
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Build a progress callback with the given reporting interval.
+fn make_progress_callback(
+    interval: Duration,
+) -> impl Fn(&Progress) + Send + Sync + 'static {
+    let last_report = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+
+    move |p: &Progress| {
         let mut last = last_report.lock().unwrap();
-        // Rate-limit output to at most every 100ms
-        if last.elapsed() >= Duration::from_millis(100)
-            || p.bytes_transferred == p.total_bytes.unwrap_or(0)
-        {
+        let is_done = p.total_bytes.is_some_and(|t| t > 0 && p.bytes_transferred >= t);
+        if last.elapsed() >= interval || is_done {
             *last = std::time::Instant::now();
+            let transferred = format_bytes(p.bytes_transferred);
             if let Some(total) = p.total_bytes {
                 if total > 0 {
                     let pct = (p.bytes_transferred as f64 / total as f64) * 100.0;
+                    let total_str = format_bytes(total);
                     eprint!(
-                        "\r[{}/{} bytes  {:.0}%  {:.1}s]",
-                        p.bytes_transferred,
-                        total,
-                        pct,
+                        "\r  {transferred} / {total_str}  ({pct:.0}%)  {:.1}s",
                         p.elapsed.as_secs_f64()
                     );
                 } else {
                     eprint!(
-                        "\r[{} bytes  {:.1}s]",
-                        p.bytes_transferred,
+                        "\r  {transferred}  {:.1}s",
                         p.elapsed.as_secs_f64()
                     );
                 }
             } else {
                 eprint!(
-                    "\r[{} bytes  {:.1}s]",
-                    p.bytes_transferred,
+                    "\r  {transferred}  {:.1}s",
                     p.elapsed.as_secs_f64()
                 );
             }
         }
-    };
-
-    (cb, total_bytes_ret)
+    }
 }
 
 pub async fn run_copy(src: &str, dst: &str, progress: bool) -> Result<u64> {
     let src_uri = normalize_uri(src);
     let dst_uri = normalize_uri(dst);
 
+    let interval = if progress {
+        Duration::from_millis(100)
+    } else {
+        Duration::from_secs(2)
+    };
+
     eprintln!("Fetching {src_uri} ...");
 
-    let mut get_req = crate::get(&src_uri);
-    get_req = get_req.on_credentials(interactive_credential_callback());
-    if progress {
-        let (cb, _) = make_progress_callback();
-        get_req = get_req.on_progress(cb);
-    }
+    let get_req = crate::get(&src_uri)
+        .on_credentials(interactive_credential_callback())
+        .on_progress(make_progress_callback(interval));
 
     let response = get_req.await?;
     let content_length = response.content_length();
 
     if let Some(len) = content_length {
-        eprintln!("Source size: {} bytes", len);
+        eprintln!("\rSource: {}", format_bytes(len));
     }
 
     let reader = response.reader();
 
     eprintln!("Sending to {dst_uri} ...");
 
-    let mut put_req = crate::put(&dst_uri).stream(reader);
+    let mut put_req = crate::put(&dst_uri)
+        .stream(reader)
+        .on_credentials(interactive_credential_callback())
+        .on_progress(make_progress_callback(interval));
     if let Some(len) = content_length {
         put_req = put_req.content_length(len);
     }
-    put_req = put_req.on_credentials(interactive_credential_callback());
 
     let bytes_written = put_req.await?;
-
-    if progress {
-        eprintln!(); // newline after progress
-    }
+    eprintln!(); // newline after progress
 
     Ok(bytes_written)
 }
@@ -271,19 +283,19 @@ pub async fn run_get(uri: &str, progress: bool) -> Result<()> {
     let uri = normalize_uri(uri);
     eprintln!("Fetching {uri} ...");
 
-    let mut req = crate::get(&uri);
-    req = req.on_credentials(interactive_credential_callback());
-    if progress {
-        let (cb, _) = make_progress_callback();
-        req = req.on_progress(cb);
-    }
+    let interval = if progress {
+        Duration::from_millis(100)
+    } else {
+        Duration::from_secs(2)
+    };
+
+    let req = crate::get(&uri)
+        .on_credentials(interactive_credential_callback())
+        .on_progress(make_progress_callback(interval));
 
     let response = req.await?;
     let data = response.bytes_lossy().await;
-
-    if progress {
-        eprintln!(); // newline after progress
-    }
+    eprintln!(); // newline after progress
 
     // Write raw bytes to stdout
     use std::io::Write;
@@ -302,19 +314,22 @@ pub async fn run_put(uri: &str, progress: bool) -> Result<()> {
     use tokio::io::AsyncReadExt;
     tokio::io::stdin().read_to_end(&mut buf).await?;
 
-    let mut req = crate::put(&uri).bytes(buf);
-    req = req.on_credentials(interactive_credential_callback());
-    if progress {
-        let (cb, _) = make_progress_callback();
-        req = req.on_progress(cb);
-    }
+    let interval = if progress {
+        Duration::from_millis(100)
+    } else {
+        Duration::from_secs(2)
+    };
+
+    eprintln!("Sending to {uri} ...");
+
+    let req = crate::put(&uri)
+        .bytes(buf)
+        .on_credentials(interactive_credential_callback())
+        .on_progress(make_progress_callback(interval));
 
     let bytes_written = req.await?;
+    eprintln!();
 
-    if progress {
-        eprintln!();
-    }
-
-    eprintln!("Wrote {bytes_written} bytes");
+    eprintln!("Wrote {}", format_bytes(bytes_written));
     Ok(())
 }
