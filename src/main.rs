@@ -1,44 +1,22 @@
-use std::env;
+use clap::Parser;
 
 #[tokio::main]
 async fn main() -> ayurl::Result<()> {
     ayurl::init_tracing();
 
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: ayurl <URI> [output-file]");
-        eprintln!("  ayurl file:///etc/hostname");
-        eprintln!("  ayurl https://example.com/");
-        eprintln!("  ayurl https://example.com/ /tmp/output.html");
-        std::process::exit(1);
-    }
+    let cli = ayurl::cli::Cli::parse();
 
-    let uri = &args[1];
-
-    let response = ayurl::get(uri)
-        .on_progress(|p| {
-            if let Some(total) = p.total_bytes {
-                eprintln!("[{}/{}  {:.1}s]", p.bytes_transferred, total, p.elapsed.as_secs_f64());
-            } else {
-                eprintln!("[{}  {:.1}s]", p.bytes_transferred, p.elapsed.as_secs_f64());
-            }
-        })
-        .await?;
-
-    if let Some(output_path) = args.get(2) {
-        // Write to file
-        let output_uri = if output_path.starts_with("file://") {
-            output_path.to_string()
-        } else {
-            format!("file://{}", std::path::Path::new(output_path).canonicalize().unwrap_or_else(|_| std::path::PathBuf::from(output_path)).display())
-        };
-        let data = response.bytes().await?;
-        let bytes_written = ayurl::put(&output_uri).bytes(data).await?;
-        eprintln!("Wrote {bytes_written} bytes to {output_path}");
-    } else {
-        // Print to stdout
-        let text = response.text_lossy().await;
-        print!("{text}");
+    match cli.command {
+        ayurl::cli::Command::Copy { src, dst, progress } => {
+            let bytes = ayurl::cli::run_copy(&src, &dst, progress).await?;
+            eprintln!("Copied {bytes} bytes");
+        }
+        ayurl::cli::Command::Get { uri, progress } => {
+            ayurl::cli::run_get(&uri, progress).await?;
+        }
+        ayurl::cli::Command::Put { uri, progress } => {
+            ayurl::cli::run_put(&uri, progress).await?;
+        }
     }
 
     Ok(())
