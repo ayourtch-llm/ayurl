@@ -1,6 +1,21 @@
+use std::process::Stdio;
+
 use ayurl::cli::{normalize_uri, run_copy, run_get, Cli, Command};
 use clap::Parser;
 use tempfile::TempDir;
+use tokio::io::AsyncWriteExt;
+
+/// Path to the compiled binary. cargo test builds it in the same target dir.
+fn binary_path() -> std::path::PathBuf {
+    // The test binary is in target/debug/deps; the main binary is in target/debug
+    let mut path = std::env::current_exe().unwrap();
+    path.pop(); // remove test binary name
+    if path.ends_with("deps") {
+        path.pop(); // remove deps/
+    }
+    path.push("ayurl");
+    path
+}
 
 // --- normalize_uri tests ---
 
@@ -253,4 +268,186 @@ async fn copy_large_file() {
 
     assert_eq!(bytes, 1024 * 1024);
     assert_eq!(std::fs::read(&dst).unwrap(), data);
+}
+
+// --- Binary invocation tests (stdin/stdout piping) ---
+
+#[tokio::test]
+async fn binary_put_from_stdin() {
+    let dir = TempDir::new().unwrap();
+    let dst = dir.path().join("from_stdin.txt");
+
+    let mut child = tokio::process::Command::new(binary_path())
+        .args(["put", dst.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ayurl");
+
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin.write_all(b"hello from stdin").await.unwrap();
+    stdin.shutdown().await.unwrap();
+
+    let output = child.wait_with_output().await.unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hello from stdin");
+}
+
+#[tokio::test]
+async fn binary_put_with_progress() {
+    let dir = TempDir::new().unwrap();
+    let dst = dir.path().join("stdin_progress.txt");
+
+    let mut child = tokio::process::Command::new(binary_path())
+        .args(["put", "-p", dst.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ayurl");
+
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin.write_all(b"progress stdin data").await.unwrap();
+    stdin.shutdown().await.unwrap();
+
+    let output = child.wait_with_output().await.unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(std::fs::read_to_string(&dst).unwrap(), "progress stdin data");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Wrote"), "stderr should contain byte count: {stderr}");
+}
+
+#[tokio::test]
+async fn binary_get_to_stdout() {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("stdout_src.txt");
+    std::fs::write(&src, "stdout content").unwrap();
+
+    let output = tokio::process::Command::new(binary_path())
+        .args(["get", src.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "stdout content");
+}
+
+#[tokio::test]
+async fn binary_copy_command() {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("cp_src.txt");
+    let dst = dir.path().join("cp_dst.txt");
+    std::fs::write(&src, "copy via binary").unwrap();
+
+    let output = tokio::process::Command::new(binary_path())
+        .args(["copy", src.to_str().unwrap(), dst.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(std::fs::read_to_string(&dst).unwrap(), "copy via binary");
+}
+
+#[tokio::test]
+async fn binary_cp_alias() {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("alias_src.txt");
+    let dst = dir.path().join("alias_dst.txt");
+    std::fs::write(&src, "cp alias").unwrap();
+
+    let output = tokio::process::Command::new(binary_path())
+        .args(["cp", src.to_str().unwrap(), dst.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(std::fs::read_to_string(&dst).unwrap(), "cp alias");
+}
+
+#[tokio::test]
+async fn binary_cat_alias() {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("cat_src.txt");
+    std::fs::write(&src, "cat alias content").unwrap();
+
+    let output = tokio::process::Command::new(binary_path())
+        .args(["cat", src.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "cat alias content");
+}
+
+#[tokio::test]
+async fn binary_no_args_shows_help() {
+    let output = tokio::process::Command::new(binary_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .unwrap();
+
+    // clap exits with error code 2 when no subcommand is given
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Usage") || stderr.contains("ayurl"));
+}
+
+#[tokio::test]
+async fn binary_pipe_get_to_put() {
+    // Get from one file, pipe through the binary, put to another
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("pipe_src.txt");
+    let dst = dir.path().join("pipe_dst.txt");
+    std::fs::write(&src, "piped through binary").unwrap();
+
+    // First: get to stdout
+    let get_output = tokio::process::Command::new(binary_path())
+        .args(["get", src.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .unwrap();
+    assert!(get_output.status.success());
+
+    // Second: put from the captured stdout
+    let mut child = tokio::process::Command::new(binary_path())
+        .args(["put", dst.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin.write_all(&get_output.stdout).await.unwrap();
+    stdin.shutdown().await.unwrap();
+
+    let put_output = child.wait_with_output().await.unwrap();
+    assert!(put_output.status.success());
+
+    assert_eq!(std::fs::read_to_string(&dst).unwrap(), "piped through binary");
 }
