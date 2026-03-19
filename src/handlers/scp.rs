@@ -6,7 +6,8 @@ use crate::error::{AyurlError, Result};
 use crate::scheme::{SchemeCapabilities, SchemeHandler, TransferContext};
 
 use super::ssh_common::{
-    channel_reader_to_async_read, parse_ssh_url, request_ssh_credentials, SshOptions,
+    channel_reader_to_async_read, parse_ssh_url, request_ssh_credentials, FuturesToTokioReader,
+    SshOptions,
 };
 
 /// Handler for `scp://` URIs using ayssh.
@@ -110,56 +111,67 @@ impl SchemeHandler for ScpHandler {
         };
         let file_mode = ssh_opts.and_then(|o| o.file_mode).unwrap_or(0o644);
 
-        // Read body into memory for the buffered upload API.
-        // TODO: switch to upload_stream once ayssh fixes SSH channel window
-        // handling (currently truncates at ~1MB due to window exhaustion).
-        let mut data = Vec::new();
-        let mut body = body;
-        futures::io::AsyncReadExt::read_to_end(&mut body, &mut data).await?;
-        let len = data.len() as u64;
+        // SCP protocol requires file_size upfront. If content_length_hint
+        // is available, we can stream directly. Otherwise, buffer first.
+        let (mut tokio_reader, file_size): (Box<dyn tokio::io::AsyncRead + Send + Unpin>, u64) =
+            if let Some(len) = ctx.content_length_hint {
+                tracing::debug!(content_length = len, "scp upload: streaming with known size");
+                (Box::new(FuturesToTokioReader::new(body)), len)
+            } else {
+                tracing::debug!("scp upload: buffering (no content_length_hint)");
+                let mut data = Vec::new();
+                let mut body = body;
+                futures::io::AsyncReadExt::read_to_end(&mut body, &mut data).await?;
+                let len = data.len() as u64;
+                (
+                    Box::new(FuturesToTokioReader::new(futures::io::Cursor::new(data))),
+                    len,
+                )
+            };
 
-        if let Some(key) = private_key {
-            ayssh::sftp::ScpSession::upload_with_publickey(
+        let bytes_written = if let Some(key) = private_key {
+            ayssh::sftp::ScpSession::upload_stream_with_publickey(
                 &target.host,
                 target.port,
                 &target.username,
                 &key,
                 &target.path,
-                &data,
+                &mut *tokio_reader,
+                file_size,
                 file_mode,
             )
             .await
-            .map_err(|e| AyurlError::Connection(format!("SCP upload failed: {e}")))?;
+            .map_err(|e| AyurlError::Connection(format!("SCP upload failed: {e}")))?
         } else if let Some(ref password) = target.password {
-            ayssh::sftp::ScpSession::upload(
+            ayssh::sftp::ScpSession::upload_stream(
                 &target.host,
                 target.port,
                 &target.username,
                 password,
                 &target.path,
-                &data,
+                &mut *tokio_reader,
+                file_size,
                 file_mode,
             )
             .await
-            .map_err(|e| AyurlError::Connection(format!("SCP upload failed: {e}")))?;
+            .map_err(|e| AyurlError::Connection(format!("SCP upload failed: {e}")))?
         } else {
             let creds = request_ssh_credentials(uri, &target, ctx)?;
             let password = creds.secret.unwrap_or_default();
 
-            ayssh::sftp::ScpSession::upload(
+            ayssh::sftp::ScpSession::upload_stream(
                 &target.host,
                 target.port,
                 creds.username.as_deref().unwrap_or(&target.username),
                 &password,
                 &target.path,
-                &data,
+                &mut *tokio_reader,
+                file_size,
                 file_mode,
             )
             .await
-            .map_err(|e| AyurlError::Connection(format!("SCP upload failed: {e}")))?;
+            .map_err(|e| AyurlError::Connection(format!("SCP upload failed: {e}")))?
         };
-
-        let bytes_written = len;
 
         tracing::debug!(bytes = bytes_written, "scp handler: upload complete");
         Ok(bytes_written)
