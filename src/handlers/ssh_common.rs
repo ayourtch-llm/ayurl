@@ -131,3 +131,137 @@ pub fn request_ssh_credentials(
     ctx.request_credentials(&cred_req)
         .ok_or_else(|| AyurlError::Connection(format!("no credentials provided for {host}")))
 }
+
+/// Spawn an `SshChannelReader` into a background task and return a
+/// `futures::io::AsyncRead` that receives chunks through a channel.
+///
+/// This avoids the borrow-checker issue of polling `read_chunk()` inside
+/// `poll_read()`, and provides true streaming with backpressure.
+pub fn channel_reader_to_async_read(
+    mut reader: ayssh::sftp::SshChannelReader,
+) -> (impl futures::io::AsyncRead + Send + Unpin, u64) {
+    let content_length = reader.content_length();
+
+    // Bounded channel provides backpressure — producer waits if consumer is slow
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<Vec<u8>, std::io::Error>>(4);
+
+    tokio::spawn(async move {
+        loop {
+            match reader.read_chunk().await {
+                Ok(chunk) if chunk.is_empty() => break,
+                Ok(chunk) => {
+                    if tx.send(Ok(chunk)).await.is_err() {
+                        break; // receiver dropped
+                    }
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            e.to_string(),
+                        )))
+                        .await;
+                    break;
+                }
+            }
+        }
+    });
+
+    let reader = ChannelStreamReader {
+        rx,
+        buf: Vec::new(),
+        buf_pos: 0,
+        done: false,
+    };
+
+    (reader, content_length)
+}
+
+/// Async reader that pulls chunks from a background task via mpsc channel.
+pub struct ChannelStreamReader {
+    rx: tokio::sync::mpsc::Receiver<std::result::Result<Vec<u8>, std::io::Error>>,
+    buf: Vec<u8>,
+    buf_pos: usize,
+    done: bool,
+}
+
+impl futures::io::AsyncRead for ChannelStreamReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        // Serve buffered data first
+        if self.buf_pos < self.buf.len() {
+            let available = &self.buf[self.buf_pos..];
+            let to_copy = available.len().min(buf.len());
+            buf[..to_copy].copy_from_slice(&available[..to_copy]);
+            self.buf_pos += to_copy;
+            return std::task::Poll::Ready(Ok(to_copy));
+        }
+
+        if self.done {
+            return std::task::Poll::Ready(Ok(0));
+        }
+
+        // Poll the channel for the next chunk
+        match self.rx.poll_recv(cx) {
+            std::task::Poll::Ready(Some(Ok(chunk))) => {
+                if chunk.is_empty() {
+                    self.done = true;
+                    return std::task::Poll::Ready(Ok(0));
+                }
+                let to_copy = chunk.len().min(buf.len());
+                buf[..to_copy].copy_from_slice(&chunk[..to_copy]);
+                if to_copy < chunk.len() {
+                    self.buf = chunk;
+                    self.buf_pos = to_copy;
+                } else {
+                    self.buf.clear();
+                    self.buf_pos = 0;
+                }
+                std::task::Poll::Ready(Ok(to_copy))
+            }
+            std::task::Poll::Ready(Some(Err(e))) => {
+                self.done = true;
+                std::task::Poll::Ready(Err(e))
+            }
+            std::task::Poll::Ready(None) => {
+                // Channel closed = EOF
+                self.done = true;
+                std::task::Poll::Ready(Ok(0))
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+/// Convert a `futures::io::AsyncRead` into a `tokio::io::AsyncRead`
+/// for ayssh's upload methods which expect tokio's trait.
+pub struct FuturesToTokioReader<R> {
+    inner: R,
+}
+
+impl<R> FuturesToTokioReader<R> {
+    pub fn new(inner: R) -> Self {
+        Self { inner }
+    }
+}
+
+impl<R: futures::io::AsyncRead + Unpin> tokio::io::AsyncRead for FuturesToTokioReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let slice = buf.initialize_unfilled();
+        match std::pin::Pin::new(&mut self.inner).poll_read(cx, slice) {
+            std::task::Poll::Ready(Ok(n)) => {
+                buf.advance(n);
+                std::task::Poll::Ready(Ok(()))
+            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e)),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}

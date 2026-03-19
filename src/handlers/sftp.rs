@@ -5,7 +5,7 @@ use url::Url;
 use crate::error::{AyurlError, Result};
 use crate::scheme::{SchemeCapabilities, SchemeHandler, TransferContext};
 
-use super::ssh_common::{parse_ssh_url, request_ssh_credentials, SshOptions};
+use super::ssh_common::{parse_ssh_url, request_ssh_credentials, FuturesToTokioReader, SshOptions};
 
 /// Handler for `sftp://` URIs using ayssh.
 ///
@@ -14,9 +14,6 @@ use super::ssh_common::{parse_ssh_url, request_ssh_credentials, SshOptions};
 /// Supports password auth (from URL or credential callback) and
 /// public key auth (via `SshOptions`).
 pub struct SftpHandler;
-
-/// Default read chunk size for SFTP reads (32KB).
-const SFTP_READ_CHUNK: u32 = 32768;
 
 #[async_trait]
 impl SchemeHandler for SftpHandler {
@@ -36,41 +33,12 @@ impl SchemeHandler for SftpHandler {
 
         let mut client = connect_sftp(uri, ctx).await?;
 
-        // Open the remote file for reading
-        let handle = client
-            .open(
-                &target.path,
-                ayssh::sftp::sftp_flags::SSH_FXF_READ,
-                &ayssh::sftp::SftpAttrs::default(),
-            )
+        // Use the high-level read_file convenience method
+        let data = client
+            .read_file(&target.path)
             .await
-            .map_err(|e| AyurlError::Connection(format!("SFTP open failed: {e}")))?;
+            .map_err(|e| AyurlError::Connection(format!("SFTP read failed: {e}")))?;
 
-        // Read the file in chunks
-        let mut data = Vec::new();
-        let mut offset = 0u64;
-        loop {
-            let chunk = client
-                .read(&handle, offset, SFTP_READ_CHUNK)
-                .await;
-
-            match chunk {
-                Ok(bytes) if bytes.is_empty() => break,
-                Ok(bytes) => {
-                    offset += bytes.len() as u64;
-                    data.extend_from_slice(&bytes);
-                }
-                Err(_) if !data.is_empty() => {
-                    // Got an error after reading some data — likely EOF
-                    break;
-                }
-                Err(e) => {
-                    return Err(AyurlError::Connection(format!("SFTP read failed: {e}")));
-                }
-            }
-        }
-
-        let _ = client.close(&handle).await;
         let _ = client.disconnect().await;
 
         tracing::debug!(bytes = data.len(), "sftp handler: download complete");
@@ -80,7 +48,7 @@ impl SchemeHandler for SftpHandler {
     async fn put(
         &self,
         uri: &Url,
-        mut body: Box<dyn AsyncRead + Send + Unpin>,
+        body: Box<dyn AsyncRead + Send + Unpin>,
         ctx: &mut TransferContext,
     ) -> Result<u64> {
         let target = parse_ssh_url(uri)?;
@@ -92,45 +60,27 @@ impl SchemeHandler for SftpHandler {
             "sftp handler: PUT (upload)"
         );
 
-        // Read body into memory
-        let mut data = Vec::new();
-        futures::io::AsyncReadExt::read_to_end(&mut body, &mut data).await?;
-        let len = data.len() as u64;
+        let ssh_opts = ctx.options::<SshOptions>();
+        let file_mode = ssh_opts.and_then(|o| o.file_mode).unwrap_or(0o644);
 
         let mut client = connect_sftp(uri, ctx).await?;
 
-        // Open (create/truncate) the remote file for writing
-        let handle = client
-            .open(
-                &target.path,
-                ayssh::sftp::sftp_flags::SSH_FXF_WRITE
-                    | ayssh::sftp::sftp_flags::SSH_FXF_CREAT
-                    | ayssh::sftp::sftp_flags::SSH_FXF_TRUNC,
-                &ayssh::sftp::SftpAttrs::default(),
-            )
+        // Use streaming upload — wrap futures::io::AsyncRead → tokio::io::AsyncRead
+        let mut tokio_reader = FuturesToTokioReader::new(body);
+        let bytes_written = client
+            .write_file_stream(&target.path, &mut tokio_reader, file_mode)
             .await
-            .map_err(|e| AyurlError::Connection(format!("SFTP open for write failed: {e}")))?;
+            .map_err(|e| AyurlError::Connection(format!("SFTP write failed: {e}")))?;
 
-        // Write in chunks
-        let mut offset = 0u64;
-        for chunk in data.chunks(SFTP_READ_CHUNK as usize) {
-            client
-                .write(&handle, offset, chunk)
-                .await
-                .map_err(|e| AyurlError::Connection(format!("SFTP write failed: {e}")))?;
-            offset += chunk.len() as u64;
-        }
-
-        let _ = client.close(&handle).await;
         let _ = client.disconnect().await;
 
-        tracing::debug!(bytes = len, "sftp handler: upload complete");
-        Ok(len)
+        tracing::debug!(bytes = bytes_written, "sftp handler: upload complete");
+        Ok(bytes_written)
     }
 
     fn capabilities(&self) -> SchemeCapabilities {
         SchemeCapabilities {
-            supports_streaming: false, // buffered via Vec<u8> for now
+            supports_streaming: true,
             supports_seek: false,
             supports_content_length: false,
         }
@@ -140,10 +90,7 @@ impl SchemeHandler for SftpHandler {
 /// Establish an SFTP connection using the best available auth method.
 ///
 /// Priority: private key (from SshOptions) → password from URL → credential callback.
-async fn connect_sftp(
-    uri: &Url,
-    ctx: &TransferContext,
-) -> Result<ayssh::sftp::SftpClient> {
+async fn connect_sftp(uri: &Url, ctx: &TransferContext) -> Result<ayssh::sftp::SftpClient> {
     let target = parse_ssh_url(uri)?;
 
     // Check for private key in options
