@@ -122,6 +122,7 @@ pub struct PutRequest {
     options: Option<Box<dyn Any + Send + Sync>>,
     credential_callback: Option<CredentialCallback>,
     body: PutBody,
+    content_length: Option<u64>,
 }
 
 enum PutBody {
@@ -143,6 +144,7 @@ impl PutRequest {
             options: None,
             credential_callback: None,
             body: PutBody::Empty,
+            content_length: None,
         }
     }
 
@@ -170,6 +172,16 @@ impl PutRequest {
         cb: impl Fn(&CredentialRequest) -> Option<Credentials> + Send + Sync + 'static,
     ) -> Self {
         self.credential_callback = Some(Arc::new(cb));
+        self
+    }
+
+    /// Provide a content length hint for the body.
+    ///
+    /// Some handlers (e.g., SCP) require the file size upfront to enable
+    /// true streaming uploads. Without this hint, they fall back to
+    /// buffering the entire body in memory.
+    pub fn content_length(mut self, len: u64) -> Self {
+        self.content_length = Some(len);
         self
     }
 
@@ -203,6 +215,7 @@ impl PutRequest {
         ctx.credential_callback = self
             .credential_callback
             .or_else(|| self.client.credential_callback());
+        ctx.content_length_hint = self.content_length;
 
         let body: Box<dyn AsyncRead + Send + Unpin> = match self.body {
             PutBody::Empty => Box::new(futures::io::empty()),

@@ -137,6 +137,9 @@ pub struct TransferContext {
     pub timeout: Option<Duration>,
     pub options: Option<Box<dyn Any + Send + Sync>>,
     pub credential_callback: Option<CredentialCallback>,
+    /// Content length hint for the body being uploaded.
+    /// Enables streaming uploads for handlers that need size upfront (e.g., SCP).
+    pub content_length_hint: Option<u64>,
 }
 
 impl TransferContext {
@@ -147,6 +150,7 @@ impl TransferContext {
             timeout: None,
             options: None,
             credential_callback: None,
+            content_length_hint: None,
         }
     }
 

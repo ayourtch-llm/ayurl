@@ -236,9 +236,13 @@ pub async fn run_copy(src: &str, dst: &str, progress: bool) -> Result<u64> {
     }
 
     let response = get_req.await?;
+    let content_length = response.content_length();
     let reader = response.reader();
 
     let mut put_req = crate::put(&dst_uri).stream(reader);
+    if let Some(len) = content_length {
+        put_req = put_req.content_length(len);
+    }
     put_req = put_req.on_credentials(interactive_credential_callback());
 
     let bytes_written = put_req.await?;

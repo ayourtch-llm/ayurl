@@ -108,17 +108,23 @@ impl SchemeHandler for ScpHandler {
         };
         let file_mode = ssh_opts.and_then(|o| o.file_mode).unwrap_or(0o644);
 
-        // Wrap the futures::io::AsyncRead body into tokio::io::AsyncRead
-        // for ayssh's upload_stream which expects tokio's trait.
-        //
-        // upload_stream needs file_size upfront. Since we're streaming and
-        // may not know the size, we read into memory first.
-        // TODO: when callers can provide content_length hint, use true streaming.
-        let mut data = Vec::new();
-        let mut body = body;
-        futures::io::AsyncReadExt::read_to_end(&mut body, &mut data).await?;
-        let file_size = data.len() as u64;
-        let mut tokio_reader = FuturesToTokioReader::new(futures::io::Cursor::new(data));
+        // SCP protocol requires file_size upfront. If content_length_hint
+        // is available, we can stream directly. Otherwise, buffer first.
+        let (mut tokio_reader, file_size): (Box<dyn tokio::io::AsyncRead + Send + Unpin>, u64) =
+            if let Some(len) = ctx.content_length_hint {
+                tracing::debug!(content_length = len, "scp upload: streaming with known size");
+                (Box::new(FuturesToTokioReader::new(body)), len)
+            } else {
+                tracing::debug!("scp upload: buffering (no content_length_hint)");
+                let mut data = Vec::new();
+                let mut body = body;
+                futures::io::AsyncReadExt::read_to_end(&mut body, &mut data).await?;
+                let len = data.len() as u64;
+                (
+                    Box::new(FuturesToTokioReader::new(futures::io::Cursor::new(data))),
+                    len,
+                )
+            };
 
         let bytes_written = if let Some(key) = private_key {
             ayssh::sftp::ScpSession::upload_stream_with_publickey(
@@ -127,7 +133,7 @@ impl SchemeHandler for ScpHandler {
                 &target.username,
                 &key,
                 &target.path,
-                &mut tokio_reader,
+                &mut *tokio_reader,
                 file_size,
                 file_mode,
             )
@@ -140,7 +146,7 @@ impl SchemeHandler for ScpHandler {
                 &target.username,
                 password,
                 &target.path,
-                &mut tokio_reader,
+                &mut *tokio_reader,
                 file_size,
                 file_mode,
             )
@@ -156,7 +162,7 @@ impl SchemeHandler for ScpHandler {
                 creds.username.as_deref().unwrap_or(&target.username),
                 &password,
                 &target.path,
-                &mut tokio_reader,
+                &mut *tokio_reader,
                 file_size,
                 file_mode,
             )
