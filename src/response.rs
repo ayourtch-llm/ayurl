@@ -26,7 +26,7 @@ impl std::fmt::Debug for Response {
 }
 
 impl Response {
-    pub(crate) fn new(
+    pub fn new(
         reader: Box<dyn AsyncRead + Send + Unpin>,
         content_length: Option<u64>,
     ) -> Self {
