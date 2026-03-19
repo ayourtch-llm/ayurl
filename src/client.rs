@@ -176,6 +176,20 @@ impl ClientBuilder {
                 .or_insert_with(|| http_handler);
         }
 
+        #[cfg(feature = "scp")]
+        {
+            self.schemes
+                .entry("scp".to_string())
+                .or_insert_with(|| Arc::new(crate::handlers::scp::ScpHandler));
+        }
+
+        #[cfg(feature = "sftp")]
+        {
+            self.schemes
+                .entry("sftp".to_string())
+                .or_insert_with(|| Arc::new(crate::handlers::sftp::SftpHandler));
+        }
+
         Client {
             inner: Arc::new(ClientInner {
                 schemes: self.schemes,

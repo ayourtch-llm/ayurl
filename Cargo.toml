@@ -20,7 +20,7 @@ clap = { version = "4.0", features = ["derive"] }
 rpassword = "7"
 
 reqwest = { version = "0.12", features = ["stream"], optional = true }
-# ayssh = { path = "../ayssh", optional = true }
+ayssh = { path = "../ayssh", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -32,4 +32,5 @@ base64 = "0.22"
 default = ["file", "http"]
 file = []
 http = ["dep:reqwest"]
-# scp = ["dep:ayssh"]
+scp = ["dep:ayssh"]
+sftp = ["dep:ayssh"]

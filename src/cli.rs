@@ -145,9 +145,36 @@ pub fn interactive_credential_callback(
             handle.block_on(async { prompt_password("Password: ").await.ok() })
         })?;
 
+        // Handle multi-prompt (keyboard-interactive) auth
+        if !req.prompts.is_empty() {
+            let mut responses = Vec::new();
+            for prompt in &req.prompts {
+                let response = if prompt.echo {
+                    std::thread::scope(|_| {
+                        handle.block_on(async {
+                            prompt_line(&prompt.message).await.ok()
+                        })
+                    })
+                } else {
+                    std::thread::scope(|_| {
+                        handle.block_on(async {
+                            prompt_password(&prompt.message).await.ok()
+                        })
+                    })
+                };
+                responses.push(response?);
+            }
+            return Some(Credentials {
+                username: Some(username),
+                secret: None,
+                responses,
+            });
+        }
+
         Some(Credentials {
             username: Some(username),
             secret: Some(password),
+            ..Default::default()
         })
     }
 }

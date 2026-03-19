@@ -77,6 +77,7 @@ impl HttpHandler {
         Some(Credentials {
             username: Some(username.to_string()),
             secret: uri.password().map(|p| p.to_string()),
+            ..Default::default()
         })
     }
 
@@ -99,6 +100,7 @@ impl HttpHandler {
             scheme: uri.scheme().to_string(),
             kind: CredentialKind::UsernamePassword,
             message: format!("Authentication required for {host}"),
+            prompts: Vec::new(),
         }
     }
 }

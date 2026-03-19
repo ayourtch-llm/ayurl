@@ -17,6 +17,10 @@ use crate::progress::ProgressSink;
 pub enum CredentialKind {
     UsernamePassword,
     BearerToken,
+    /// SSH keyboard-interactive or other multi-prompt auth.
+    KeyboardInteractive,
+    /// Private key passphrase.
+    KeyPassphrase,
     Custom(String),
 }
 
@@ -25,9 +29,20 @@ impl fmt::Display for CredentialKind {
         match self {
             Self::UsernamePassword => write!(f, "username/password"),
             Self::BearerToken => write!(f, "bearer token"),
+            Self::KeyboardInteractive => write!(f, "keyboard-interactive"),
+            Self::KeyPassphrase => write!(f, "key passphrase"),
             Self::Custom(s) => write!(f, "{s}"),
         }
     }
+}
+
+/// A single prompt in a multi-prompt authentication challenge.
+#[derive(Debug, Clone)]
+pub struct AuthPrompt {
+    /// The prompt text (e.g., "Password:", "Enter OTP:").
+    pub message: String,
+    /// Whether the response should be echoed (false = password-style).
+    pub echo: bool,
 }
 
 /// Information passed to the credential callback when authentication fails.
@@ -40,6 +55,9 @@ pub struct CredentialRequest {
     pub kind: CredentialKind,
     /// Human-readable message (e.g., "Authentication required for example.com").
     pub message: String,
+    /// For multi-prompt auth (keyboard-interactive), the individual prompts.
+    /// Empty for simple username/password auth.
+    pub prompts: Vec<AuthPrompt>,
 }
 
 /// Credentials returned by the callback.
@@ -47,6 +65,9 @@ pub struct CredentialRequest {
 pub struct Credentials {
     pub username: Option<String>,
     pub secret: Option<String>,
+    /// Responses for multi-prompt auth (keyboard-interactive).
+    /// Each entry corresponds to a prompt in `CredentialRequest::prompts`.
+    pub responses: Vec<String>,
 }
 
 /// Callback type for credential requests.

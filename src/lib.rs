@@ -58,12 +58,15 @@ pub use progress::Progress;
 pub use request::{GetRequest, PutRequest};
 pub use response::{LenientReader, Response};
 pub use scheme::{
-    AsyncReadWrite, Connector, CredentialCallback, CredentialKind, CredentialRequest, Credentials,
-    DirectConnector, SchemeCapabilities, SchemeHandler, TransferContext,
+    AsyncReadWrite, AuthPrompt, Connector, CredentialCallback, CredentialKind, CredentialRequest,
+    Credentials, DirectConnector, SchemeCapabilities, SchemeHandler, TransferContext,
 };
 
 #[cfg(feature = "http")]
 pub use handlers::http::HttpOptions;
+
+#[cfg(any(feature = "scp", feature = "sftp"))]
+pub use handlers::ssh_common::SshOptions;
 
 /// Start a GET request using the global default client.
 ///

@@ -348,6 +348,7 @@ async fn http_get_credential_callback_on_401() {
             Some(ayurl::Credentials {
                 username: Some("bob".into()),
                 secret: Some("password123".into()),
+                ..Default::default()
             })
         })
         .await
@@ -384,6 +385,7 @@ async fn http_get_credential_callback_receives_info() {
             Some(ayurl::Credentials {
                 username: Some("user".into()),
                 secret: Some("pass".into()),
+                ..Default::default()
             })
         })
         .await
@@ -464,6 +466,7 @@ async fn http_put_credential_callback_on_401() {
             Some(ayurl::Credentials {
                 username: Some("uploader".into()),
                 secret: Some("secret".into()),
+                ..Default::default()
             })
         })
         .text("upload data")
@@ -491,6 +494,7 @@ async fn http_client_level_credential_callback() {
             Some(ayurl::Credentials {
                 username: Some("global".into()),
                 secret: Some("creds".into()),
+                ..Default::default()
             })
         })
         .build();
@@ -526,6 +530,7 @@ async fn http_request_credential_overrides_client() {
             Some(ayurl::Credentials {
                 username: Some("client".into()),
                 secret: Some("level".into()),
+                ..Default::default()
             })
         })
         .build();
@@ -537,6 +542,7 @@ async fn http_request_credential_overrides_client() {
             Some(ayurl::Credentials {
                 username: Some("request".into()),
                 secret: Some("level".into()),
+                ..Default::default()
             })
         })
         .await
