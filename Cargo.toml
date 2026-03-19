@@ -17,6 +17,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.0", features = ["derive"] }
+rpassword = "7"
 
 reqwest = { version = "0.12", features = ["stream"], optional = true }
 # ayssh = { path = "../ayssh", optional = true }

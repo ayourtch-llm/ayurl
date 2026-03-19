@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 
 use crate::error::Result;
 use crate::progress::Progress;
+use crate::scheme::{CredentialRequest, Credentials};
 
 #[derive(Parser)]
 #[command(name = "ayurl", about = "URI-based data transfer tool")]
@@ -68,6 +69,89 @@ pub fn normalize_uri(s: &str) -> String {
     format!("file://{}", abs.display())
 }
 
+/// Prompt for a line of input on stderr (with echo).
+/// Async-compatible: reads from stdin using tokio.
+pub async fn prompt_line(prompt: &str) -> std::io::Result<String> {
+    use std::io::Write;
+    use tokio::io::AsyncBufReadExt;
+
+    // Write prompt to stderr so it doesn't mix with data on stdout
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+
+    let mut line = String::new();
+    let stdin = tokio::io::stdin();
+    let mut reader = tokio::io::BufReader::new(stdin);
+    reader.read_line(&mut line).await?;
+
+    // Trim trailing newline
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
+
+    Ok(line)
+}
+
+/// Prompt for a password on stderr (no echo).
+/// Uses `rpassword` in a blocking task to avoid blocking the async runtime.
+pub async fn prompt_password(prompt: &str) -> std::io::Result<String> {
+    let prompt = prompt.to_string();
+    tokio::task::spawn_blocking(move || rpassword::prompt_password(prompt))
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+}
+
+/// Create a credential callback that prompts the user interactively.
+///
+/// Returns a callback suitable for `on_credentials()` that:
+/// 1. Prints the auth message to stderr
+/// 2. Prompts for username (with echo, async via tokio stdin)
+/// 3. Prompts for password (no echo, via rpassword in spawn_blocking)
+///
+/// Since the credential callback is synchronous (`Fn` not `async Fn`),
+/// we use `tokio::runtime::Handle::block_on` inside spawn_blocking
+/// for the async username prompt.
+pub fn interactive_credential_callback(
+) -> impl Fn(&CredentialRequest) -> Option<Credentials> + Send + Sync + 'static {
+    move |req: &CredentialRequest| {
+        eprintln!("{}", req.message);
+
+        // We're called from an async context but the callback is sync.
+        // Use the current tokio handle to run our async prompts.
+        let handle = tokio::runtime::Handle::current();
+
+        let username = std::thread::scope(|_| {
+            handle.block_on(async {
+                let url_username = req.url.username();
+                if !url_username.is_empty() {
+                    // Pre-fill from URL
+                    eprintln!("Username [{}]: ", url_username);
+                    let input = prompt_line("").await.ok()?;
+                    if input.is_empty() {
+                        Some(url_username.to_string())
+                    } else {
+                        Some(input)
+                    }
+                } else {
+                    prompt_line("Username: ").await.ok()
+                }
+            })
+        })?;
+
+        let password = std::thread::scope(|_| {
+            handle.block_on(async { prompt_password("Password: ").await.ok() })
+        })?;
+
+        Some(Credentials {
+            username: Some(username),
+            secret: Some(password),
+        })
+    }
+}
+
 fn make_progress_callback() -> (impl Fn(&Progress) + Send + Sync + 'static, Arc<AtomicU64>) {
     let last_report = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let total_bytes = Arc::new(AtomicU64::new(0));
@@ -77,7 +161,9 @@ fn make_progress_callback() -> (impl Fn(&Progress) + Send + Sync + 'static, Arc<
         total_bytes.store(p.bytes_transferred, Ordering::Relaxed);
         let mut last = last_report.lock().unwrap();
         // Rate-limit output to at most every 100ms
-        if last.elapsed() >= Duration::from_millis(100) || p.bytes_transferred == p.total_bytes.unwrap_or(0) {
+        if last.elapsed() >= Duration::from_millis(100)
+            || p.bytes_transferred == p.total_bytes.unwrap_or(0)
+        {
             *last = std::time::Instant::now();
             if let Some(total) = p.total_bytes {
                 if total > 0 {
@@ -115,15 +201,20 @@ pub async fn run_copy(src: &str, dst: &str, progress: bool) -> Result<u64> {
 
     tracing::info!(%src_uri, %dst_uri, "copy");
 
-    let response = if progress {
+    let mut get_req = crate::get(&src_uri);
+    get_req = get_req.on_credentials(interactive_credential_callback());
+    if progress {
         let (cb, _) = make_progress_callback();
-        crate::get(&src_uri).on_progress(cb).await?
-    } else {
-        crate::get(&src_uri).await?
-    };
+        get_req = get_req.on_progress(cb);
+    }
 
+    let response = get_req.await?;
     let reader = response.reader();
-    let bytes_written = crate::put(&dst_uri).stream(reader).await?;
+
+    let mut put_req = crate::put(&dst_uri).stream(reader);
+    put_req = put_req.on_credentials(interactive_credential_callback());
+
+    let bytes_written = put_req.await?;
 
     if progress {
         eprintln!(); // newline after progress
@@ -136,13 +227,14 @@ pub async fn run_get(uri: &str, progress: bool) -> Result<()> {
     let uri = normalize_uri(uri);
     tracing::info!(%uri, "get");
 
-    let response = if progress {
+    let mut req = crate::get(&uri);
+    req = req.on_credentials(interactive_credential_callback());
+    if progress {
         let (cb, _) = make_progress_callback();
-        crate::get(&uri).on_progress(cb).await?
-    } else {
-        crate::get(&uri).await?
-    };
+        req = req.on_progress(cb);
+    }
 
+    let response = req.await?;
     let data = response.bytes_lossy().await;
 
     if progress {
@@ -167,6 +259,7 @@ pub async fn run_put(uri: &str, progress: bool) -> Result<()> {
     tokio::io::stdin().read_to_end(&mut buf).await?;
 
     let mut req = crate::put(&uri).bytes(buf);
+    req = req.on_credentials(interactive_credential_callback());
     if progress {
         let (cb, _) = make_progress_callback();
         req = req.on_progress(cb);
