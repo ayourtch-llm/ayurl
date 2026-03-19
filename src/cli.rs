@@ -214,26 +214,29 @@ fn make_progress_callback(
         if last.elapsed() >= interval || is_done {
             *last = std::time::Instant::now();
             let transferred = format_bytes(p.bytes_transferred);
-            if let Some(total) = p.total_bytes {
+            // Clear line then write progress — avoids garbled output from
+            // shorter lines not fully overwriting longer ones.
+            let line = if let Some(total) = p.total_bytes {
                 if total > 0 {
                     let pct = (p.bytes_transferred as f64 / total as f64) * 100.0;
                     let total_str = format_bytes(total);
-                    eprint!(
-                        "\r  {transferred} / {total_str}  ({pct:.0}%)  {:.1}s",
+                    format!(
+                        "  {transferred} / {total_str}  ({pct:.0}%)  {:.1}s",
                         p.elapsed.as_secs_f64()
-                    );
+                    )
                 } else {
-                    eprint!(
-                        "\r  {transferred}  {:.1}s",
+                    format!(
+                        "  {transferred}  {:.1}s",
                         p.elapsed.as_secs_f64()
-                    );
+                    )
                 }
             } else {
-                eprint!(
-                    "\r  {transferred}  {:.1}s",
+                format!(
+                    "  {transferred}  {:.1}s",
                     p.elapsed.as_secs_f64()
-                );
-            }
+                )
+            };
+            eprint!("\r\x1b[2K{line}");
         }
     }
 }
