@@ -71,7 +71,12 @@ pub struct SshTarget {
 pub fn parse_ssh_url(uri: &Url) -> Result<SshTarget> {
     let host = uri
         .host_str()
-        .ok_or_else(|| AyurlError::InvalidUri(format!("missing host in {uri}")))?
+        .ok_or_else(|| AyurlError::InvalidUri(format!("missing host in {uri}")))?;
+    // Strip brackets from IPv6 addresses — url crate keeps them for non-standard schemes
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
         .to_string();
 
     let port = uri.port().unwrap_or(22);
