@@ -104,65 +104,56 @@ pub async fn prompt_password(prompt: &str) -> std::io::Result<String> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
 }
 
+/// Prompt for a line of input synchronously (with echo).
+/// Uses stderr for the prompt so stdout stays clean for data.
+fn prompt_line_sync(prompt: &str) -> std::io::Result<String> {
+    use std::io::Write;
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
+    Ok(line)
+}
+
 /// Create a credential callback that prompts the user interactively.
 ///
 /// Returns a callback suitable for `on_credentials()` that:
 /// 1. Prints the auth message to stderr
-/// 2. Prompts for username (with echo, async via tokio stdin)
-/// 3. Prompts for password (no echo, via rpassword in spawn_blocking)
+/// 2. Prompts for username (with echo, sync stdin)
+/// 3. Prompts for password (no echo, via rpassword)
 ///
-/// Since the credential callback is synchronous (`Fn` not `async Fn`),
-/// we use `tokio::runtime::Handle::block_on` inside spawn_blocking
-/// for the async username prompt.
+/// Uses blocking I/O since credential prompts are inherently interactive
+/// and brief. This avoids the "cannot block_on inside a runtime" problem.
 pub fn interactive_credential_callback(
 ) -> impl Fn(&CredentialRequest) -> Option<Credentials> + Send + Sync + 'static {
     move |req: &CredentialRequest| {
         eprintln!("{}", req.message);
 
-        // We're called from an async context but the callback is sync.
-        // Use the current tokio handle to run our async prompts.
-        let handle = tokio::runtime::Handle::current();
-
-        let username = std::thread::scope(|_| {
-            handle.block_on(async {
-                let url_username = req.url.username();
-                if !url_username.is_empty() {
-                    // Pre-fill from URL
-                    eprintln!("Username [{}]: ", url_username);
-                    let input = prompt_line("").await.ok()?;
-                    if input.is_empty() {
-                        Some(url_username.to_string())
-                    } else {
-                        Some(input)
-                    }
-                } else {
-                    prompt_line("Username: ").await.ok()
-                }
-            })
-        })?;
-
-        let password = std::thread::scope(|_| {
-            handle.block_on(async { prompt_password("Password: ").await.ok() })
-        })?;
-
         // Handle multi-prompt (keyboard-interactive) auth
         if !req.prompts.is_empty() {
+            let url_username = req.url.username();
+            let username = if !url_username.is_empty() {
+                url_username.to_string()
+            } else {
+                prompt_line_sync("Username: ").ok()?
+            };
+
             let mut responses = Vec::new();
             for prompt in &req.prompts {
                 let response = if prompt.echo {
-                    std::thread::scope(|_| {
-                        handle.block_on(async {
-                            prompt_line(&prompt.message).await.ok()
-                        })
-                    })
+                    prompt_line_sync(&prompt.message).ok()?
                 } else {
-                    std::thread::scope(|_| {
-                        handle.block_on(async {
-                            prompt_password(&prompt.message).await.ok()
-                        })
-                    })
+                    rpassword::prompt_password(&prompt.message).ok()?
                 };
-                responses.push(response?);
+                responses.push(response);
             }
             return Some(Credentials {
                 username: Some(username),
@@ -170,6 +161,21 @@ pub fn interactive_credential_callback(
                 responses,
             });
         }
+
+        // Standard username/password auth
+        let url_username = req.url.username();
+        let username = if !url_username.is_empty() {
+            let input = prompt_line_sync(&format!("Username [{}]: ", url_username)).ok()?;
+            if input.is_empty() {
+                url_username.to_string()
+            } else {
+                input
+            }
+        } else {
+            prompt_line_sync("Username: ").ok()?
+        };
+
+        let password = rpassword::prompt_password("Password: ").ok()?;
 
         Some(Credentials {
             username: Some(username),
