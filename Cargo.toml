@@ -29,7 +29,7 @@ axum = "0.8"
 base64 = "0.22"
 
 [features]
-default = ["file", "http"]
+default = ["file", "http", "scp", "sftp"]
 file = []
 http = ["dep:reqwest"]
 scp = ["dep:ayssh"]
