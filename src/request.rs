@@ -79,7 +79,7 @@ impl GetRequest {
         let scheme = url.scheme().to_string();
         let handler = self.client.handler_for(&scheme)?;
 
-        let content_length = handler.content_length(&url).await.unwrap_or(None);
+        let preflight_content_length = handler.content_length(&url).await.unwrap_or(None);
 
         let mut ctx = TransferContext::new(self.client.connector());
         ctx.timeout = self.timeout.or(self.client.default_timeout());
@@ -89,6 +89,10 @@ impl GetRequest {
             .or_else(|| self.client.credential_callback());
 
         let reader = handler.get(&url, &mut ctx).await?;
+
+        // Prefer content_length discovered during get() (e.g., SCP protocol),
+        // fall back to the preflight HEAD-style check.
+        let content_length = ctx.response_content_length.or(preflight_content_length);
 
         // Wrap with progress tracking if requested
         let reader: Box<dyn AsyncRead + Send + Unpin> = match self.progress {

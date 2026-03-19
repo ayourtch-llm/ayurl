@@ -140,6 +140,10 @@ pub struct TransferContext {
     /// Content length hint for the body being uploaded.
     /// Enables streaming uploads for handlers that need size upfront (e.g., SCP).
     pub content_length_hint: Option<u64>,
+    /// Content length discovered during get(). Handlers set this if they learn
+    /// the size during connection (e.g., SCP receives file size in the protocol).
+    /// The request builder reads this after get() returns.
+    pub response_content_length: Option<u64>,
 }
 
 impl TransferContext {
@@ -151,6 +155,7 @@ impl TransferContext {
             options: None,
             credential_callback: None,
             content_length_hint: None,
+            response_content_length: None,
         }
     }
 

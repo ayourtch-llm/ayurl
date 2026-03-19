@@ -83,6 +83,9 @@ impl SchemeHandler for ScpHandler {
             "scp handler: streaming download started"
         );
 
+        // Report the discovered content length back through the context
+        ctx.response_content_length = Some(content_length);
+
         Ok(Box::new(reader))
     }
 

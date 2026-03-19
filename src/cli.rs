@@ -232,7 +232,7 @@ pub async fn run_copy(src: &str, dst: &str, progress: bool) -> Result<u64> {
     let src_uri = normalize_uri(src);
     let dst_uri = normalize_uri(dst);
 
-    tracing::info!(%src_uri, %dst_uri, "copy");
+    eprintln!("Fetching {src_uri} ...");
 
     let mut get_req = crate::get(&src_uri);
     get_req = get_req.on_credentials(interactive_credential_callback());
@@ -243,7 +243,14 @@ pub async fn run_copy(src: &str, dst: &str, progress: bool) -> Result<u64> {
 
     let response = get_req.await?;
     let content_length = response.content_length();
+
+    if let Some(len) = content_length {
+        eprintln!("Source size: {} bytes", len);
+    }
+
     let reader = response.reader();
+
+    eprintln!("Sending to {dst_uri} ...");
 
     let mut put_req = crate::put(&dst_uri).stream(reader);
     if let Some(len) = content_length {
@@ -262,7 +269,7 @@ pub async fn run_copy(src: &str, dst: &str, progress: bool) -> Result<u64> {
 
 pub async fn run_get(uri: &str, progress: bool) -> Result<()> {
     let uri = normalize_uri(uri);
-    tracing::info!(%uri, "get");
+    eprintln!("Fetching {uri} ...");
 
     let mut req = crate::get(&uri);
     req = req.on_credentials(interactive_credential_callback());
@@ -288,7 +295,7 @@ pub async fn run_get(uri: &str, progress: bool) -> Result<()> {
 
 pub async fn run_put(uri: &str, progress: bool) -> Result<()> {
     let uri = normalize_uri(uri);
-    tracing::info!(%uri, "put");
+    eprintln!("Reading stdin ...");
 
     // Read stdin into memory (streaming stdin is possible but complex)
     let mut buf = Vec::new();
