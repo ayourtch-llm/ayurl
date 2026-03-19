@@ -6,7 +6,7 @@ use url::Url;
 
 use crate::error::{AyurlError, Result};
 use crate::request::{GetRequest, PutRequest};
-use crate::scheme::{Connector, DirectConnector, SchemeHandler};
+use crate::scheme::{Connector, CredentialCallback, CredentialRequest, Credentials, DirectConnector, SchemeHandler};
 
 /// Global default client, lazily initialized.
 static DEFAULT_CLIENT: OnceLock<Client> = OnceLock::new();
@@ -25,6 +25,7 @@ struct ClientInner {
     schemes: HashMap<String, Arc<dyn SchemeHandler>>,
     connector: Arc<dyn Connector>,
     default_timeout: Option<Duration>,
+    credential_callback: Option<CredentialCallback>,
 }
 
 impl Client {
@@ -84,6 +85,11 @@ impl Client {
         self.inner.default_timeout
     }
 
+    /// Get the credential callback (if set).
+    pub(crate) fn credential_callback(&self) -> Option<CredentialCallback> {
+        self.inner.credential_callback.clone()
+    }
+
     /// Parse and validate a URI string.
     pub(crate) fn parse_uri(uri: &str) -> Result<Url> {
         // Handle file:// URIs with relative paths
@@ -102,6 +108,7 @@ pub struct ClientBuilder {
     schemes: HashMap<String, Arc<dyn SchemeHandler>>,
     connector: Option<Arc<dyn Connector>>,
     default_timeout: Option<Duration>,
+    credential_callback: Option<CredentialCallback>,
 }
 
 impl ClientBuilder {
@@ -110,6 +117,7 @@ impl ClientBuilder {
             schemes: HashMap::new(),
             connector: None,
             default_timeout: None,
+            credential_callback: None,
         }
     }
 
@@ -132,6 +140,18 @@ impl ClientBuilder {
     /// Set the default timeout for all transfers.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.default_timeout = Some(timeout);
+        self
+    }
+
+    /// Set a credential callback for handling authentication failures.
+    ///
+    /// When a handler encounters an auth failure (e.g. HTTP 401), it will
+    /// call this callback to request credentials, then retry.
+    pub fn on_credentials(
+        mut self,
+        cb: impl Fn(&CredentialRequest) -> Option<Credentials> + Send + Sync + 'static,
+    ) -> Self {
+        self.credential_callback = Some(Arc::new(cb));
         self
     }
 
@@ -163,6 +183,7 @@ impl ClientBuilder {
                     .connector
                     .unwrap_or_else(|| Arc::new(DirectConnector)),
                 default_timeout: self.default_timeout,
+                credential_callback: self.credential_callback,
             }),
         }
     }

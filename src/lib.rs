@@ -58,7 +58,8 @@ pub use progress::Progress;
 pub use request::{GetRequest, PutRequest};
 pub use response::{LenientReader, Response};
 pub use scheme::{
-    AsyncReadWrite, Connector, DirectConnector, SchemeCapabilities, SchemeHandler, TransferContext,
+    AsyncReadWrite, Connector, CredentialCallback, CredentialKind, CredentialRequest, Credentials,
+    DirectConnector, SchemeCapabilities, SchemeHandler, TransferContext,
 };
 
 #[cfg(feature = "http")]

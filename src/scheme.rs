@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +9,48 @@ use url::Url;
 
 use crate::error::Result;
 use crate::progress::ProgressSink;
+
+// --- Credential types ---
+
+/// What kind of credential a handler is requesting.
+#[derive(Debug, Clone)]
+pub enum CredentialKind {
+    UsernamePassword,
+    BearerToken,
+    Custom(String),
+}
+
+impl fmt::Display for CredentialKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UsernamePassword => write!(f, "username/password"),
+            Self::BearerToken => write!(f, "bearer token"),
+            Self::Custom(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Information passed to the credential callback when authentication fails.
+pub struct CredentialRequest {
+    /// The target URI (with any sensitive parts stripped).
+    pub url: Url,
+    /// The URI scheme ("http", "scp", etc.).
+    pub scheme: String,
+    /// What kind of credential is needed.
+    pub kind: CredentialKind,
+    /// Human-readable message (e.g., "Authentication required for example.com").
+    pub message: String,
+}
+
+/// Credentials returned by the callback.
+#[derive(Debug, Clone, Default)]
+pub struct Credentials {
+    pub username: Option<String>,
+    pub secret: Option<String>,
+}
+
+/// Callback type for credential requests.
+pub type CredentialCallback = Arc<dyn Fn(&CredentialRequest) -> Option<Credentials> + Send + Sync>;
 
 /// Trait for providing network connections (transport-level abstraction).
 ///
@@ -72,6 +115,7 @@ pub struct TransferContext {
     pub progress_sink: Option<ProgressSink>,
     pub timeout: Option<Duration>,
     pub options: Option<Box<dyn Any + Send + Sync>>,
+    pub credential_callback: Option<CredentialCallback>,
 }
 
 impl TransferContext {
@@ -81,12 +125,19 @@ impl TransferContext {
             progress_sink: None,
             timeout: None,
             options: None,
+            credential_callback: None,
         }
     }
 
     /// Downcast scheme-specific options to a concrete type.
     pub fn options<T: 'static>(&self) -> Option<&T> {
         self.options.as_ref()?.downcast_ref::<T>()
+    }
+
+    /// Request credentials from the callback (if set).
+    /// Returns `None` if no callback is set or the callback declines.
+    pub fn request_credentials(&self, request: &CredentialRequest) -> Option<Credentials> {
+        self.credential_callback.as_ref()?(request)
     }
 }
 

@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, put};
 use axum::Router;
 use tokio::net::TcpListener;
@@ -257,4 +257,292 @@ async fn http_roundtrip_with_file() {
     // Read back
     let text = ayurl::get(&file_uri).await.unwrap().text().await.unwrap();
     assert_eq!(text, "roundtrip content");
+}
+
+// --- Credential tests ---
+
+/// Helper: axum handler that requires Basic auth with given user/pass.
+fn require_basic_auth(
+    headers: &HeaderMap,
+    expected_user: &str,
+    expected_pass: &str,
+) -> bool {
+    use base64::Engine;
+    let Some(auth) = headers.get("authorization") else {
+        return false;
+    };
+    let auth = auth.to_str().unwrap_or("");
+    let Some(encoded) = auth.strip_prefix("Basic ") else {
+        return false;
+    };
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .unwrap_or_default();
+    let decoded = String::from_utf8_lossy(&decoded);
+    let expected = format!("{expected_user}:{expected_pass}");
+    decoded == expected
+}
+
+#[tokio::test]
+async fn http_get_with_url_credentials() {
+    let app = Router::new().route(
+        "/secret",
+        get(|headers: HeaderMap| async move {
+            if require_basic_auth(&headers, "alice", "s3cret") {
+                (StatusCode::OK, "authenticated!")
+            } else {
+                (StatusCode::UNAUTHORIZED, "nope")
+            }
+        }),
+    );
+    let addr = start_server(app).await;
+
+    let text = ayurl::get(&format!("http://alice:s3cret@{addr}/secret"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(text, "authenticated!");
+}
+
+#[tokio::test]
+async fn http_get_url_credentials_wrong_password() {
+    let app = Router::new().route(
+        "/secret",
+        get(|headers: HeaderMap| async move {
+            if require_basic_auth(&headers, "alice", "correct") {
+                (StatusCode::OK, "ok")
+            } else {
+                (StatusCode::UNAUTHORIZED, "bad creds")
+            }
+        }),
+    );
+    let addr = start_server(app).await;
+
+    let result = ayurl::get(&format!("http://alice:wrong@{addr}/secret")).await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ayurl::AyurlError::Http { status, .. } => assert_eq!(status, 401),
+        other => panic!("expected Http 401, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn http_get_credential_callback_on_401() {
+    let app = Router::new().route(
+        "/protected",
+        get(|headers: HeaderMap| async move {
+            if require_basic_auth(&headers, "bob", "password123") {
+                (StatusCode::OK, "welcome bob")
+            } else {
+                (StatusCode::UNAUTHORIZED, "auth required")
+            }
+        }),
+    );
+    let addr = start_server(app).await;
+
+    // No credentials in URL, but provide via callback
+    let text = ayurl::get(&format!("http://{addr}/protected"))
+        .on_credentials(|_req| {
+            Some(ayurl::Credentials {
+                username: Some("bob".into()),
+                secret: Some("password123".into()),
+            })
+        })
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(text, "welcome bob");
+}
+
+#[tokio::test]
+async fn http_get_credential_callback_receives_info() {
+    let app = Router::new().route(
+        "/info",
+        get(|headers: HeaderMap| async move {
+            if require_basic_auth(&headers, "user", "pass") {
+                (StatusCode::OK, "ok")
+            } else {
+                (StatusCode::UNAUTHORIZED, "no")
+            }
+        }),
+    );
+    let addr = start_server(app).await;
+
+    let callback_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let called = callback_called.clone();
+
+    let text = ayurl::get(&format!("http://{addr}/info"))
+        .on_credentials(move |req| {
+            called.store(true, Ordering::Relaxed);
+            assert_eq!(req.scheme, "http");
+            assert!(req.message.contains(&addr.ip().to_string()));
+            assert!(matches!(req.kind, ayurl::CredentialKind::UsernamePassword));
+            Some(ayurl::Credentials {
+                username: Some("user".into()),
+                secret: Some("pass".into()),
+            })
+        })
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert_eq!(text, "ok");
+    assert!(callback_called.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn http_get_credential_callback_declines() {
+    let app = Router::new().route(
+        "/locked",
+        get(|headers: HeaderMap| async move {
+            if require_basic_auth(&headers, "x", "y") {
+                (StatusCode::OK, "ok")
+            } else {
+                (StatusCode::UNAUTHORIZED, "locked out")
+            }
+        }),
+    );
+    let addr = start_server(app).await;
+
+    // Callback returns None — should propagate the 401
+    let result = ayurl::get(&format!("http://{addr}/locked"))
+        .on_credentials(|_req| None)
+        .await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ayurl::AyurlError::Http { status, message } => {
+            assert_eq!(status, 401);
+            assert_eq!(message, "locked out");
+        }
+        other => panic!("expected Http 401, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn http_put_with_url_credentials() {
+    let app = Router::new().route(
+        "/upload",
+        put(|headers: HeaderMap| async move {
+            if require_basic_auth(&headers, "writer", "write_pass") {
+                (StatusCode::OK, "stored")
+            } else {
+                (StatusCode::UNAUTHORIZED, "no auth")
+            }
+        }),
+    );
+    let addr = start_server(app).await;
+
+    let written = ayurl::put(&format!("http://writer:write_pass@{addr}/upload"))
+        .text("data")
+        .await
+        .unwrap();
+    assert_eq!(written, 4);
+}
+
+#[tokio::test]
+async fn http_put_credential_callback_on_401() {
+    let app = Router::new().route(
+        "/secure_upload",
+        put(|headers: HeaderMap| async move {
+            if require_basic_auth(&headers, "uploader", "secret") {
+                (StatusCode::OK, "done")
+            } else {
+                (StatusCode::UNAUTHORIZED, "nope")
+            }
+        }),
+    );
+    let addr = start_server(app).await;
+
+    let written = ayurl::put(&format!("http://{addr}/secure_upload"))
+        .on_credentials(|_| {
+            Some(ayurl::Credentials {
+                username: Some("uploader".into()),
+                secret: Some("secret".into()),
+            })
+        })
+        .text("upload data")
+        .await
+        .unwrap();
+    assert_eq!(written, 11);
+}
+
+#[tokio::test]
+async fn http_client_level_credential_callback() {
+    let app = Router::new().route(
+        "/client_auth",
+        get(|headers: HeaderMap| async move {
+            if require_basic_auth(&headers, "global", "creds") {
+                (StatusCode::OK, "client-level auth works")
+            } else {
+                (StatusCode::UNAUTHORIZED, "no")
+            }
+        }),
+    );
+    let addr = start_server(app).await;
+
+    let client = ayurl::Client::builder()
+        .on_credentials(|_| {
+            Some(ayurl::Credentials {
+                username: Some("global".into()),
+                secret: Some("creds".into()),
+            })
+        })
+        .build();
+
+    let text = client
+        .get(&format!("http://{addr}/client_auth"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(text, "client-level auth works");
+}
+
+#[tokio::test]
+async fn http_request_credential_overrides_client() {
+    let app = Router::new().route(
+        "/override",
+        get(|headers: HeaderMap| async move {
+            if require_basic_auth(&headers, "request", "level") {
+                (StatusCode::OK, "request wins")
+            } else if require_basic_auth(&headers, "client", "level") {
+                (StatusCode::OK, "client wins")
+            } else {
+                (StatusCode::UNAUTHORIZED, "no")
+            }
+        }),
+    );
+    let addr = start_server(app).await;
+
+    let client = ayurl::Client::builder()
+        .on_credentials(|_| {
+            Some(ayurl::Credentials {
+                username: Some("client".into()),
+                secret: Some("level".into()),
+            })
+        })
+        .build();
+
+    // Per-request callback should override client-level
+    let text = client
+        .get(&format!("http://{addr}/override"))
+        .on_credentials(|_| {
+            Some(ayurl::Credentials {
+                username: Some("request".into()),
+                secret: Some("level".into()),
+            })
+        })
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(text, "request wins");
 }

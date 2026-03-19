@@ -4,7 +4,10 @@ use futures::stream::TryStreamExt;
 use url::Url;
 
 use crate::error::{AyurlError, Result};
-use crate::scheme::{SchemeCapabilities, SchemeHandler, TransferContext};
+use crate::scheme::{
+    CredentialKind, CredentialRequest, Credentials, SchemeCapabilities, SchemeHandler,
+    TransferContext,
+};
 
 /// Scheme-specific options for HTTP/HTTPS requests.
 ///
@@ -62,6 +65,42 @@ impl HttpHandler {
         }
         builder
     }
+
+    /// Extract credentials from a URL's userinfo component.
+    ///
+    /// `Url::username()` and `Url::password()` return percent-decoded strings.
+    fn url_credentials(uri: &Url) -> Option<Credentials> {
+        let username = uri.username();
+        if username.is_empty() {
+            return None;
+        }
+        Some(Credentials {
+            username: Some(username.to_string()),
+            secret: uri.password().map(|p| p.to_string()),
+        })
+    }
+
+    /// Apply credentials as Basic Auth on a request builder.
+    fn apply_credentials(
+        builder: reqwest::RequestBuilder,
+        creds: &Credentials,
+    ) -> reqwest::RequestBuilder {
+        builder.basic_auth(
+            creds.username.as_deref().unwrap_or(""),
+            creds.secret.as_deref(),
+        )
+    }
+
+    /// Build a credential request for the callback.
+    fn make_credential_request(uri: &Url) -> CredentialRequest {
+        let host = uri.host_str().unwrap_or("unknown");
+        CredentialRequest {
+            url: uri.clone(),
+            scheme: uri.scheme().to_string(),
+            kind: CredentialKind::UsernamePassword,
+            message: format!("Authentication required for {host}"),
+        }
+    }
 }
 
 impl Default for HttpHandler {
@@ -79,7 +118,12 @@ impl SchemeHandler for HttpHandler {
     ) -> Result<Box<dyn AsyncRead + Send + Unpin>> {
         tracing::debug!(%uri, "http handler: GET");
 
-        let builder = self.client.get(uri.as_str());
+        // 1. Try with URL credentials (if any)
+        let url_creds = Self::url_credentials(uri);
+        let mut builder = self.client.get(uri.as_str());
+        if let Some(ref creds) = url_creds {
+            builder = Self::apply_credentials(builder, creds);
+        }
         let builder = Self::apply_options(builder, ctx);
 
         let response = builder.send().await.map_err(|e| {
@@ -87,6 +131,39 @@ impl SchemeHandler for HttpHandler {
         })?;
 
         let status = response.status();
+
+        // 2. On 401, try credential callback and retry
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            tracing::debug!("http handler: got 401, attempting credential callback");
+            let cred_req = Self::make_credential_request(uri);
+
+            if let Some(creds) = ctx.request_credentials(&cred_req) {
+                let mut retry_builder = self.client.get(uri.as_str());
+                retry_builder = Self::apply_credentials(retry_builder, &creds);
+                let retry_builder = Self::apply_options(retry_builder, ctx);
+
+                let retry_response = retry_builder.send().await.map_err(|e| {
+                    AyurlError::Connection(format!("HTTP request failed: {e}"))
+                })?;
+
+                let retry_status = retry_response.status();
+                if !retry_status.is_success() {
+                    let body = retry_response.text().await.unwrap_or_default();
+                    return Err(AyurlError::Http {
+                        status: retry_status.as_u16(),
+                        message: body,
+                    });
+                }
+
+                let stream = retry_response
+                    .bytes_stream()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+                let reader = tokio_util::io::StreamReader::new(stream);
+                let compat = tokio_util::compat::TokioAsyncReadCompatExt::compat(reader);
+                return Ok(Box::new(compat));
+            }
+        }
+
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(AyurlError::Http {
@@ -118,7 +195,12 @@ impl SchemeHandler for HttpHandler {
         futures::io::AsyncReadExt::read_to_end(&mut body, &mut buf).await?;
         let len = buf.len() as u64;
 
-        let builder = self.client.put(uri.as_str()).body(buf);
+        // 1. Try with URL credentials (if any)
+        let url_creds = Self::url_credentials(uri);
+        let mut builder = self.client.put(uri.as_str()).body(buf.clone());
+        if let Some(ref creds) = url_creds {
+            builder = Self::apply_credentials(builder, creds);
+        }
         let builder = Self::apply_options(builder, ctx);
 
         let response = builder.send().await.map_err(|e| {
@@ -126,6 +208,34 @@ impl SchemeHandler for HttpHandler {
         })?;
 
         let status = response.status();
+
+        // 2. On 401, try credential callback and retry
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            tracing::debug!("http handler: PUT got 401, attempting credential callback");
+            let cred_req = Self::make_credential_request(uri);
+
+            if let Some(creds) = ctx.request_credentials(&cred_req) {
+                let mut retry_builder = self.client.put(uri.as_str()).body(buf);
+                retry_builder = Self::apply_credentials(retry_builder, &creds);
+                let retry_builder = Self::apply_options(retry_builder, ctx);
+
+                let retry_response = retry_builder.send().await.map_err(|e| {
+                    AyurlError::Connection(format!("HTTP PUT failed: {e}"))
+                })?;
+
+                let retry_status = retry_response.status();
+                if !retry_status.is_success() {
+                    let body = retry_response.text().await.unwrap_or_default();
+                    return Err(AyurlError::Http {
+                        status: retry_status.as_u16(),
+                        message: body,
+                    });
+                }
+
+                return Ok(len);
+            }
+        }
+
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(AyurlError::Http {

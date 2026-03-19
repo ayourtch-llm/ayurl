@@ -10,7 +10,7 @@ use crate::client::Client;
 use crate::error::Result;
 use crate::progress::{Progress, ProgressSink};
 use crate::response::Response;
-use crate::scheme::TransferContext;
+use crate::scheme::{CredentialCallback, CredentialRequest, Credentials, TransferContext};
 
 /// Builder for a GET request. Implements `IntoFuture` so it can be
 /// `.await`ed directly or configured with chained methods first.
@@ -20,6 +20,7 @@ pub struct GetRequest {
     timeout: Option<Duration>,
     progress: Option<ProgressSink>,
     options: Option<Box<dyn Any + Send + Sync>>,
+    credential_callback: Option<CredentialCallback>,
 }
 
 impl GetRequest {
@@ -30,6 +31,7 @@ impl GetRequest {
             timeout: None,
             progress: None,
             options: None,
+            credential_callback: None,
         }
     }
 
@@ -62,6 +64,15 @@ impl GetRequest {
         self
     }
 
+    /// Set a per-request credential callback (overrides the client-level one).
+    pub fn on_credentials(
+        mut self,
+        cb: impl Fn(&CredentialRequest) -> Option<Credentials> + Send + Sync + 'static,
+    ) -> Self {
+        self.credential_callback = Some(Arc::new(cb));
+        self
+    }
+
     /// Execute the GET request, returning a streaming `Response`.
     async fn execute(self) -> Result<Response> {
         let url = Client::parse_uri(&self.uri)?;
@@ -73,6 +84,9 @@ impl GetRequest {
         let mut ctx = TransferContext::new(self.client.connector());
         ctx.timeout = self.timeout.or(self.client.default_timeout());
         ctx.options = self.options;
+        ctx.credential_callback = self
+            .credential_callback
+            .or_else(|| self.client.credential_callback());
 
         let reader = handler.get(&url, &mut ctx).await?;
 
@@ -106,6 +120,7 @@ pub struct PutRequest {
     timeout: Option<Duration>,
     progress: Option<ProgressSink>,
     options: Option<Box<dyn Any + Send + Sync>>,
+    credential_callback: Option<CredentialCallback>,
     body: PutBody,
 }
 
@@ -126,6 +141,7 @@ impl PutRequest {
             timeout: None,
             progress: None,
             options: None,
+            credential_callback: None,
             body: PutBody::Empty,
         }
     }
@@ -145,6 +161,15 @@ impl PutRequest {
     /// Set scheme-specific options.
     pub fn with_options<T: Any + Send + Sync>(mut self, options: T) -> Self {
         self.options = Some(Box::new(options));
+        self
+    }
+
+    /// Set a per-request credential callback (overrides the client-level one).
+    pub fn on_credentials(
+        mut self,
+        cb: impl Fn(&CredentialRequest) -> Option<Credentials> + Send + Sync + 'static,
+    ) -> Self {
+        self.credential_callback = Some(Arc::new(cb));
         self
     }
 
@@ -175,6 +200,9 @@ impl PutRequest {
         let mut ctx = TransferContext::new(self.client.connector());
         ctx.timeout = self.timeout.or(self.client.default_timeout());
         ctx.options = self.options;
+        ctx.credential_callback = self
+            .credential_callback
+            .or_else(|| self.client.credential_callback());
 
         let body: Box<dyn AsyncRead + Send + Unpin> = match self.body {
             PutBody::Empty => Box::new(futures::io::empty()),
