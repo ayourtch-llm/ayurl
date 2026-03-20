@@ -25,8 +25,8 @@ fn url_crate_ipv6_http() {
 
 #[tokio::test]
 async fn ssh_parse_ipv6_loopback() {
-    let url = url::Url::parse("scp://testuser@[::1]:2222/remote/path").unwrap();
-    let target = ayurl::handlers::ssh_common::parse_ssh_url(&url).unwrap();
+    let uri = ayurl::ParsedUri::parse("scp://testuser@[::1]:2222/remote/path").unwrap();
+    let target = ayurl::handlers::ssh_common::parse_ssh_url(&uri).unwrap();
     assert_eq!(target.host, "::1");
     assert_eq!(target.port, 2222);
     assert_eq!(target.username, "testuser");
@@ -35,10 +35,10 @@ async fn ssh_parse_ipv6_loopback() {
 
 #[tokio::test]
 async fn ssh_parse_ipv6_full_address() {
-    let url =
-        url::Url::parse("scp://user@[2a02:1811:1c88:7500:ceb7:d034:7ecb:4e30]//tmp/hugefile")
+    let uri =
+        ayurl::ParsedUri::parse("scp://user@[2a02:1811:1c88:7500:ceb7:d034:7ecb:4e30]//tmp/hugefile")
             .unwrap();
-    let target = ayurl::handlers::ssh_common::parse_ssh_url(&url).unwrap();
+    let target = ayurl::handlers::ssh_common::parse_ssh_url(&uri).unwrap();
     assert_eq!(target.host, "2a02:1811:1c88:7500:ceb7:d034:7ecb:4e30");
     assert_eq!(target.port, 22);
     assert_eq!(target.username, "user");
@@ -47,8 +47,8 @@ async fn ssh_parse_ipv6_full_address() {
 
 #[tokio::test]
 async fn ssh_parse_ipv6_with_password() {
-    let url = url::Url::parse("scp://user:pass@[::1]/file.txt").unwrap();
-    let target = ayurl::handlers::ssh_common::parse_ssh_url(&url).unwrap();
+    let uri = ayurl::ParsedUri::parse("scp://user:pass@[::1]/file.txt").unwrap();
+    let target = ayurl::handlers::ssh_common::parse_ssh_url(&uri).unwrap();
     assert_eq!(target.host, "::1");
     assert_eq!(target.username, "user");
     assert_eq!(target.password, Some("pass".to_string()));
@@ -56,8 +56,8 @@ async fn ssh_parse_ipv6_with_password() {
 
 #[tokio::test]
 async fn ssh_parse_ipv6_no_user() {
-    let url = url::Url::parse("scp://[::1]/file.txt").unwrap();
-    let target = ayurl::handlers::ssh_common::parse_ssh_url(&url).unwrap();
+    let uri = ayurl::ParsedUri::parse("scp://[::1]/file.txt").unwrap();
+    let target = ayurl::handlers::ssh_common::parse_ssh_url(&uri).unwrap();
     assert_eq!(target.host, "::1");
     assert!(!target.username.is_empty());
 }
@@ -65,22 +65,22 @@ async fn ssh_parse_ipv6_no_user() {
 #[tokio::test]
 async fn ssh_parse_ipv4_unchanged() {
     // IPv4 should pass through unchanged (no brackets to strip)
-    let url = url::Url::parse("scp://user@192.168.1.1/file.txt").unwrap();
-    let target = ayurl::handlers::ssh_common::parse_ssh_url(&url).unwrap();
+    let uri = ayurl::ParsedUri::parse("scp://user@192.168.1.1/file.txt").unwrap();
+    let target = ayurl::handlers::ssh_common::parse_ssh_url(&uri).unwrap();
     assert_eq!(target.host, "192.168.1.1");
 }
 
 #[tokio::test]
 async fn ssh_parse_hostname_unchanged() {
-    let url = url::Url::parse("scp://user@myhost.example.com/file.txt").unwrap();
-    let target = ayurl::handlers::ssh_common::parse_ssh_url(&url).unwrap();
+    let uri = ayurl::ParsedUri::parse("scp://user@myhost.example.com/file.txt").unwrap();
+    let target = ayurl::handlers::ssh_common::parse_ssh_url(&uri).unwrap();
     assert_eq!(target.host, "myhost.example.com");
 }
 
 #[tokio::test]
 async fn sftp_parse_ipv6() {
-    let url = url::Url::parse("sftp://user@[fe80::1]:22/remote/file").unwrap();
-    let target = ayurl::handlers::ssh_common::parse_ssh_url(&url).unwrap();
+    let uri = ayurl::ParsedUri::parse("sftp://user@[fe80::1]:22/remote/file").unwrap();
+    let target = ayurl::handlers::ssh_common::parse_ssh_url(&uri).unwrap();
     assert_eq!(target.host, "fe80::1");
     assert_eq!(target.port, 22);
 }

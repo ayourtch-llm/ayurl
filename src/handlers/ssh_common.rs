@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
-use url::Url;
-
 use crate::error::{AyurlError, Result};
 use crate::scheme::{CredentialKind, CredentialRequest, Credentials, TransferContext};
+use crate::uri::ParsedUri;
 
 /// Scheme-specific options for SCP and SFTP transfers.
 #[derive(Debug, Clone, Default)]
@@ -68,34 +67,27 @@ pub struct SshTarget {
 
 /// Parse an SCP/SFTP URL into connection parameters.
 /// Format: scp://user:pass@host:port/path or sftp://user@host/path
-pub fn parse_ssh_url(uri: &Url) -> Result<SshTarget> {
+pub fn parse_ssh_url(uri: &ParsedUri) -> Result<SshTarget> {
     let host = uri
-        .host_str()
-        .ok_or_else(|| AyurlError::InvalidUri(format!("missing host in {uri}")))?;
-    // Strip brackets from IPv6 addresses — url crate keeps them for non-standard schemes
-    let host = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host)
+        .host()
+        .ok_or_else(|| AyurlError::InvalidUri(format!("missing host in {uri}")))?
         .to_string();
 
     let port = uri.port().unwrap_or(22);
 
-    let username = {
-        let u = uri.username();
-        if u.is_empty() {
+    let username = match uri.username() {
+        Some(u) => u.to_string(),
+        None => {
             // Try current user
             std::env::var("USER")
                 .or_else(|_| std::env::var("USERNAME"))
                 .unwrap_or_else(|_| "root".to_string())
-        } else {
-            u.to_string()
         }
     };
 
     let password = uri.password().map(|p| p.to_string());
 
-    // URL path: strip leading slash for absolute paths on remote
+    // URL path: strip leading slash for relative paths on remote
     let path = uri.path().to_string();
     let path = if path.starts_with('/') {
         path[1..].to_string()
@@ -120,13 +112,13 @@ pub fn parse_ssh_url(uri: &Url) -> Result<SshTarget> {
 
 /// Request credentials via the callback if password is not available.
 pub fn request_ssh_credentials(
-    uri: &Url,
+    uri: &ParsedUri,
     target: &SshTarget,
     ctx: &TransferContext,
 ) -> Result<Credentials> {
     let host = &target.host;
     let cred_req = CredentialRequest {
-        url: uri.clone(),
+        uri: uri.clone(),
         scheme: uri.scheme().to_string(),
         kind: CredentialKind::UsernamePassword,
         message: format!("Authentication required for {host}"),

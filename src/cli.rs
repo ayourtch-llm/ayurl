@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -139,7 +139,7 @@ pub fn interactive_credential_callback(
 
         // Handle multi-prompt (keyboard-interactive) auth
         if !req.prompts.is_empty() {
-            let url_username = req.url.username();
+            let url_username = req.uri.username().unwrap_or("");
             let username = if !url_username.is_empty() {
                 url_username.to_string()
             } else {
@@ -163,7 +163,7 @@ pub fn interactive_credential_callback(
         }
 
         // Standard username/password auth
-        let url_username = req.url.username();
+        let url_username = req.uri.username().unwrap_or("");
         let username = if !url_username.is_empty() {
             let input = prompt_line_sync(&format!("Username [{}]: ", url_username)).ok()?;
             if input.is_empty() {

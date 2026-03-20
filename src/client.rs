@@ -2,9 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use url::Url;
-
 use crate::error::{AyurlError, Result};
+use crate::uri::ParsedUri;
 use crate::request::{GetRequest, PutRequest};
 use crate::scheme::{Connector, CredentialCallback, CredentialRequest, Credentials, DirectConnector, SchemeHandler};
 
@@ -91,9 +90,8 @@ impl Client {
     }
 
     /// Parse and validate a URI string.
-    pub(crate) fn parse_uri(uri: &str) -> Result<Url> {
-        // Handle file:// URIs with relative paths
-        Url::parse(uri).map_err(|e| AyurlError::InvalidUri(format!("{uri}: {e}")))
+    pub(crate) fn parse_uri(uri: &str) -> Result<ParsedUri> {
+        ParsedUri::parse(uri)
     }
 }
 

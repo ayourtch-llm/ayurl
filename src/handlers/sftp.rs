@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures::io::AsyncRead;
-use url::Url;
+use crate::uri::ParsedUri;
 
 use crate::error::{AyurlError, Result};
 use crate::scheme::{SchemeCapabilities, SchemeHandler, TransferContext};
@@ -19,7 +19,7 @@ pub struct SftpHandler;
 impl SchemeHandler for SftpHandler {
     async fn get(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         ctx: &mut TransferContext,
     ) -> Result<Box<dyn AsyncRead + Send + Unpin>> {
         let target = parse_ssh_url(uri)?;
@@ -47,7 +47,7 @@ impl SchemeHandler for SftpHandler {
 
     async fn put(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         body: Box<dyn AsyncRead + Send + Unpin>,
         ctx: &mut TransferContext,
     ) -> Result<u64> {
@@ -90,7 +90,7 @@ impl SchemeHandler for SftpHandler {
 /// Establish an SFTP connection using the best available auth method.
 ///
 /// Priority: private key (from SshOptions) → password from URL → credential callback.
-async fn connect_sftp(uri: &Url, ctx: &TransferContext) -> Result<ayssh::sftp::SftpClient> {
+async fn connect_sftp(uri: &ParsedUri, ctx: &TransferContext) -> Result<ayssh::sftp::SftpClient> {
     let target = parse_ssh_url(uri)?;
 
     // Check for private key in options

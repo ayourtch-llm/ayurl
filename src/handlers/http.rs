@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use futures::io::AsyncRead;
 use futures::stream::TryStreamExt;
-use url::Url;
 
 use crate::error::{AyurlError, Result};
 use crate::scheme::{
     CredentialKind, CredentialRequest, Credentials, SchemeCapabilities, SchemeHandler,
     TransferContext,
 };
+use crate::uri::ParsedUri;
 
 /// Scheme-specific options for HTTP/HTTPS requests.
 ///
@@ -69,11 +69,8 @@ impl HttpHandler {
     /// Extract credentials from a URL's userinfo component.
     ///
     /// `Url::username()` and `Url::password()` return percent-decoded strings.
-    fn url_credentials(uri: &Url) -> Option<Credentials> {
-        let username = uri.username();
-        if username.is_empty() {
-            return None;
-        }
+    fn url_credentials(uri: &ParsedUri) -> Option<Credentials> {
+        let username = uri.username()?;
         Some(Credentials {
             username: Some(username.to_string()),
             secret: uri.password().map(|p| p.to_string()),
@@ -93,10 +90,10 @@ impl HttpHandler {
     }
 
     /// Build a credential request for the callback.
-    fn make_credential_request(uri: &Url) -> CredentialRequest {
-        let host = uri.host_str().unwrap_or("unknown");
+    fn make_credential_request(uri: &ParsedUri) -> CredentialRequest {
+        let host = uri.host().unwrap_or("unknown");
         CredentialRequest {
-            url: uri.clone(),
+            uri: uri.clone(),
             scheme: uri.scheme().to_string(),
             kind: CredentialKind::UsernamePassword,
             message: format!("Authentication required for {host}"),
@@ -115,14 +112,14 @@ impl Default for HttpHandler {
 impl SchemeHandler for HttpHandler {
     async fn get(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         ctx: &mut TransferContext,
     ) -> Result<Box<dyn AsyncRead + Send + Unpin>> {
         tracing::debug!(%uri, "http handler: GET");
 
         // 1. Try with URL credentials (if any)
         let url_creds = Self::url_credentials(uri);
-        let mut builder = self.client.get(uri.as_str());
+        let mut builder = self.client.get(&uri.to_string());
         if let Some(ref creds) = url_creds {
             builder = Self::apply_credentials(builder, creds);
         }
@@ -140,7 +137,7 @@ impl SchemeHandler for HttpHandler {
             let cred_req = Self::make_credential_request(uri);
 
             if let Some(creds) = ctx.request_credentials(&cred_req) {
-                let mut retry_builder = self.client.get(uri.as_str());
+                let mut retry_builder = self.client.get(&uri.to_string());
                 retry_builder = Self::apply_credentials(retry_builder, &creds);
                 let retry_builder = Self::apply_options(retry_builder, ctx);
 
@@ -185,7 +182,7 @@ impl SchemeHandler for HttpHandler {
 
     async fn put(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         mut body: Box<dyn AsyncRead + Send + Unpin>,
         ctx: &mut TransferContext,
     ) -> Result<u64> {
@@ -199,7 +196,7 @@ impl SchemeHandler for HttpHandler {
 
         // 1. Try with URL credentials (if any)
         let url_creds = Self::url_credentials(uri);
-        let mut builder = self.client.put(uri.as_str()).body(buf.clone());
+        let mut builder = self.client.put(&uri.to_string()).body(buf.clone());
         if let Some(ref creds) = url_creds {
             builder = Self::apply_credentials(builder, creds);
         }
@@ -217,7 +214,7 @@ impl SchemeHandler for HttpHandler {
             let cred_req = Self::make_credential_request(uri);
 
             if let Some(creds) = ctx.request_credentials(&cred_req) {
-                let mut retry_builder = self.client.put(uri.as_str()).body(buf);
+                let mut retry_builder = self.client.put(&uri.to_string()).body(buf);
                 retry_builder = Self::apply_credentials(retry_builder, &creds);
                 let retry_builder = Self::apply_options(retry_builder, ctx);
 
@@ -249,8 +246,8 @@ impl SchemeHandler for HttpHandler {
         Ok(len)
     }
 
-    async fn content_length(&self, uri: &Url) -> Result<Option<u64>> {
-        let response = self.client.head(uri.as_str()).send().await.map_err(|e| {
+    async fn content_length(&self, uri: &ParsedUri) -> Result<Option<u64>> {
+        let response = self.client.head(&uri.to_string()).send().await.map_err(|e| {
             AyurlError::Connection(format!("HTTP HEAD failed: {e}"))
         })?;
 

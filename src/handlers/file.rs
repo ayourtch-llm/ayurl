@@ -1,18 +1,17 @@
 use async_trait::async_trait;
 use futures::io::AsyncRead;
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use url::Url;
 
-use crate::error::{AyurlError, Result};
+use crate::error::Result;
 use crate::scheme::{SchemeCapabilities, SchemeHandler, TransferContext};
+use crate::uri::ParsedUri;
 
 /// Handler for `file://` URIs — reads and writes local files.
 pub struct FileHandler;
 
 impl FileHandler {
-    fn url_to_path(uri: &Url) -> Result<std::path::PathBuf> {
-        uri.to_file_path()
-            .map_err(|_| AyurlError::InvalidUri(format!("not a valid file path: {uri}")))
+    fn url_to_path(uri: &ParsedUri) -> Result<std::path::PathBuf> {
+        Ok(std::path::PathBuf::from(uri.path()))
     }
 }
 
@@ -20,7 +19,7 @@ impl FileHandler {
 impl SchemeHandler for FileHandler {
     async fn get(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         _ctx: &mut TransferContext,
     ) -> Result<Box<dyn AsyncRead + Send + Unpin>> {
         let path = Self::url_to_path(uri)?;
@@ -32,7 +31,7 @@ impl SchemeHandler for FileHandler {
 
     async fn put(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         mut body: Box<dyn AsyncRead + Send + Unpin>,
         _ctx: &mut TransferContext,
     ) -> Result<u64> {
@@ -52,7 +51,7 @@ impl SchemeHandler for FileHandler {
         Ok(bytes_written)
     }
 
-    async fn content_length(&self, uri: &Url) -> Result<Option<u64>> {
+    async fn content_length(&self, uri: &ParsedUri) -> Result<Option<u64>> {
         let path = Self::url_to_path(uri)?;
         match tokio::fs::metadata(&path).await {
             Ok(meta) => Ok(Some(meta.len())),

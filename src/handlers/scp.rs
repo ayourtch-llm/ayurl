@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures::io::AsyncRead;
-use url::Url;
+use crate::uri::ParsedUri;
 
 use crate::error::{AyurlError, Result};
 use crate::scheme::{SchemeCapabilities, SchemeHandler, TransferContext};
@@ -23,7 +23,7 @@ pub struct ScpHandler;
 impl SchemeHandler for ScpHandler {
     async fn get(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         ctx: &mut TransferContext,
     ) -> Result<Box<dyn AsyncRead + Send + Unpin>> {
         let target = parse_ssh_url(uri)?;
@@ -91,7 +91,7 @@ impl SchemeHandler for ScpHandler {
 
     async fn put(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         body: Box<dyn AsyncRead + Send + Unpin>,
         ctx: &mut TransferContext,
     ) -> Result<u64> {
@@ -177,7 +177,7 @@ impl SchemeHandler for ScpHandler {
         Ok(bytes_written)
     }
 
-    async fn content_length(&self, _uri: &Url) -> Result<Option<u64>> {
+    async fn content_length(&self, _uri: &ParsedUri) -> Result<Option<u64>> {
         // Could be obtained from download_stream's return tuple,
         // but that would require a full connection. Return None.
         Ok(None)

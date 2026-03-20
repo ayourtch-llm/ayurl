@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::io::{AsyncRead, AsyncWrite};
-use url::Url;
+
+use crate::uri::ParsedUri;
 
 use crate::error::Result;
 use crate::progress::ProgressSink;
@@ -47,8 +48,8 @@ pub struct AuthPrompt {
 
 /// Information passed to the credential callback when authentication fails.
 pub struct CredentialRequest {
-    /// The target URI (with any sensitive parts stripped).
-    pub url: Url,
+    /// The target URI.
+    pub uri: ParsedUri,
     /// The URI scheme ("http", "scp", etc.).
     pub scheme: String,
     /// What kind of credential is needed.
@@ -180,20 +181,20 @@ pub trait SchemeHandler: Send + Sync {
     /// Initiate a GET, returning a streaming response body.
     async fn get(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         ctx: &mut TransferContext,
     ) -> Result<Box<dyn AsyncRead + Send + Unpin>>;
 
     /// Initiate a PUT, consuming a streaming request body.
     async fn put(
         &self,
-        uri: &Url,
+        uri: &ParsedUri,
         body: Box<dyn AsyncRead + Send + Unpin>,
         ctx: &mut TransferContext,
     ) -> Result<u64>;
 
     /// Optionally report the expected content length for a URI.
-    async fn content_length(&self, _uri: &Url) -> Result<Option<u64>> {
+    async fn content_length(&self, _uri: &ParsedUri) -> Result<Option<u64>> {
         Ok(None)
     }
 

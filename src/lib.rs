@@ -44,6 +44,7 @@
 
 pub mod cli;
 pub mod client;
+pub mod uri;
 pub mod error;
 pub mod handlers;
 pub mod progress;
@@ -61,6 +62,7 @@ pub use scheme::{
     AsyncReadWrite, AuthPrompt, Connector, CredentialCallback, CredentialKind, CredentialRequest,
     Credentials, DirectConnector, SchemeCapabilities, SchemeHandler, TransferContext,
 };
+pub use uri::ParsedUri;
 
 #[cfg(feature = "http")]
 pub use handlers::http::HttpOptions;

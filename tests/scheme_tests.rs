@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ayurl::SchemeHandler;
+use ayurl::{ParsedUri, SchemeHandler};
 use futures::io::AsyncRead;
-use url::Url;
 
 /// A minimal handler that only implements required methods (to test defaults)
 struct MinimalHandler;
@@ -12,7 +11,7 @@ struct MinimalHandler;
 impl ayurl::SchemeHandler for MinimalHandler {
     async fn get(
         &self,
-        _uri: &Url,
+        _uri: &ParsedUri,
         _ctx: &mut ayurl::TransferContext,
     ) -> ayurl::Result<Box<dyn AsyncRead + Send + Unpin>> {
         Ok(Box::new(futures::io::Cursor::new(b"minimal".to_vec())))
@@ -20,7 +19,7 @@ impl ayurl::SchemeHandler for MinimalHandler {
 
     async fn put(
         &self,
-        _uri: &Url,
+        _uri: &ParsedUri,
         _body: Box<dyn AsyncRead + Send + Unpin>,
         _ctx: &mut ayurl::TransferContext,
     ) -> ayurl::Result<u64> {
@@ -31,8 +30,8 @@ impl ayurl::SchemeHandler for MinimalHandler {
 #[tokio::test]
 async fn default_content_length_returns_none() {
     let handler = MinimalHandler;
-    let url = Url::parse("test:///path").unwrap();
-    let result = handler.content_length(&url).await.unwrap();
+    let uri = ParsedUri::parse("test:///path").unwrap();
+    let result = handler.content_length(&uri).await.unwrap();
     assert_eq!(result, None);
 }
 
@@ -77,7 +76,7 @@ async fn custom_scheme_handler() {
     impl ayurl::SchemeHandler for EchoHandler {
         async fn get(
             &self,
-            uri: &Url,
+            uri: &ParsedUri,
             _ctx: &mut ayurl::TransferContext,
         ) -> ayurl::Result<Box<dyn AsyncRead + Send + Unpin>> {
             // Return the path as the content
@@ -87,7 +86,7 @@ async fn custom_scheme_handler() {
 
         async fn put(
             &self,
-            _uri: &Url,
+            _uri: &ParsedUri,
             mut body: Box<dyn AsyncRead + Send + Unpin>,
             _ctx: &mut ayurl::TransferContext,
         ) -> ayurl::Result<u64> {
@@ -97,7 +96,7 @@ async fn custom_scheme_handler() {
             Ok(buf.len() as u64)
         }
 
-        async fn content_length(&self, uri: &Url) -> ayurl::Result<Option<u64>> {
+        async fn content_length(&self, uri: &ParsedUri) -> ayurl::Result<Option<u64>> {
             Ok(Some(uri.path().len() as u64))
         }
 
@@ -145,7 +144,7 @@ async fn multiple_custom_schemes() {
     impl ayurl::SchemeHandler for ConstHandler {
         async fn get(
             &self,
-            _uri: &Url,
+            _uri: &ParsedUri,
             _ctx: &mut ayurl::TransferContext,
         ) -> ayurl::Result<Box<dyn AsyncRead + Send + Unpin>> {
             Ok(Box::new(futures::io::Cursor::new(
@@ -155,7 +154,7 @@ async fn multiple_custom_schemes() {
 
         async fn put(
             &self,
-            _uri: &Url,
+            _uri: &ParsedUri,
             _body: Box<dyn AsyncRead + Send + Unpin>,
             _ctx: &mut ayurl::TransferContext,
         ) -> ayurl::Result<u64> {
