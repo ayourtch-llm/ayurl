@@ -1,5 +1,4 @@
-/// TDD tests for ayurl's URI parser.
-/// These tests define the expected behavior — implementation follows.
+/// Tests for ayurl's URI parser.
 
 use ayurl::uri::ParsedUri;
 

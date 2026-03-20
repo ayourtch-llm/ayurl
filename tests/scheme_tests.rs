@@ -172,3 +172,86 @@ async fn multiple_custom_schemes() {
     assert_eq!(a, "from alpha");
     assert_eq!(b, "from beta");
 }
+
+// --- Credential types ---
+
+#[test]
+fn credential_kind_display() {
+    assert_eq!(
+        ayurl::CredentialKind::UsernamePassword.to_string(),
+        "username/password"
+    );
+    assert_eq!(
+        ayurl::CredentialKind::BearerToken.to_string(),
+        "bearer token"
+    );
+    assert_eq!(
+        ayurl::CredentialKind::KeyboardInteractive.to_string(),
+        "keyboard-interactive"
+    );
+    assert_eq!(
+        ayurl::CredentialKind::KeyPassphrase.to_string(),
+        "key passphrase"
+    );
+    assert_eq!(
+        ayurl::CredentialKind::Custom("otp".into()).to_string(),
+        "otp"
+    );
+}
+
+#[test]
+fn credentials_default() {
+    let creds = ayurl::Credentials::default();
+    assert!(creds.username.is_none());
+    assert!(creds.secret.is_none());
+    assert!(creds.responses.is_empty());
+}
+
+#[test]
+fn auth_prompt_fields() {
+    let prompt = ayurl::AuthPrompt {
+        message: "Enter OTP:".into(),
+        echo: true,
+    };
+    assert_eq!(prompt.message, "Enter OTP:");
+    assert!(prompt.echo);
+}
+
+#[tokio::test]
+async fn transfer_context_request_credentials_none() {
+    let connector = Arc::new(ayurl::DirectConnector);
+    let ctx = ayurl::TransferContext::new(connector);
+    let req = ayurl::CredentialRequest {
+        uri: ayurl::ParsedUri::parse("http://example.com/path").unwrap(),
+        scheme: "http".into(),
+        kind: ayurl::CredentialKind::UsernamePassword,
+        message: "test".into(),
+        prompts: vec![],
+    };
+    // No callback set — should return None
+    assert!(ctx.request_credentials(&req).is_none());
+}
+
+#[tokio::test]
+async fn transfer_context_request_credentials_with_callback() {
+    let connector = Arc::new(ayurl::DirectConnector);
+    let mut ctx = ayurl::TransferContext::new(connector);
+    ctx.credential_callback = Some(Arc::new(|_req| {
+        Some(ayurl::Credentials {
+            username: Some("callback-user".into()),
+            secret: Some("callback-pass".into()),
+            ..Default::default()
+        })
+    }));
+
+    let req = ayurl::CredentialRequest {
+        uri: ayurl::ParsedUri::parse("http://example.com/path").unwrap(),
+        scheme: "http".into(),
+        kind: ayurl::CredentialKind::UsernamePassword,
+        message: "test".into(),
+        prompts: vec![],
+    };
+    let creds = ctx.request_credentials(&req).unwrap();
+    assert_eq!(creds.username.as_deref(), Some("callback-user"));
+    assert_eq!(creds.secret.as_deref(), Some("callback-pass"));
+}
