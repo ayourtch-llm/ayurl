@@ -27,6 +27,7 @@ tokio-test = "0.4"
 tempfile = "3"
 axum = "0.8"
 base64 = "0.22"
+expectrl = "0.7"
 
 [features]
 default = ["file", "http", "scp", "sftp"]

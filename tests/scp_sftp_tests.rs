@@ -9,6 +9,9 @@ use ayssh::server::host_key::HostKeyPair;
 use ayssh::server::sftp_server::MemoryFs;
 use ayssh::server::test_server::TestSshServer;
 
+/// Path to the test ed25519 private key.
+const TEST_KEY_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test_key_ed25519");
+
 /// Helper: start a test SSH server on a random port, return the server
 /// and its address string suitable for URLs.
 async fn start_ssh_server() -> (TestSshServer, String) {
@@ -315,5 +318,182 @@ async fn scp_download_with_progress() {
 
     assert_eq!(data.len(), 5_000);
     assert_eq!(last_bytes.load(Ordering::Relaxed), 5_000);
+    let _ = server_task.await;
+}
+
+// === Publickey auth tests ===
+
+#[tokio::test]
+async fn scp_download_with_publickey() {
+    let (server, addr) = start_ssh_server().await;
+    let test_data = b"publickey download";
+    let test_data_clone = test_data.to_vec();
+
+    let server_task = tokio::spawn(async move {
+        let stream = server.accept_stream().await.unwrap();
+        let (mut io, channel) = server.handshake_and_auth(stream).await.unwrap();
+        ayssh::server::test_server::handle_scp_download(
+            &mut io,
+            channel,
+            "pk.txt",
+            &test_data_clone,
+            0o644,
+        )
+        .await
+        .unwrap();
+    });
+
+    let ssh_opts = ayurl::SshOptions::new().with_private_key_path(TEST_KEY_PATH);
+
+    let client = ayurl::Client::builder().build();
+    let uri = format!("scp://testuser@{addr}/pk.txt");
+    let data = client
+        .get(&uri)
+        .with_options(ssh_opts)
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+
+    assert_eq!(data, test_data);
+    let _ = server_task.await;
+}
+
+#[tokio::test]
+async fn scp_upload_with_publickey() {
+    let (server, addr) = start_ssh_server().await;
+    let upload_data = b"publickey upload";
+
+    let server_task = tokio::spawn(async move {
+        let stream = server.accept_stream().await.unwrap();
+        let (mut io, channel) = server.handshake_and_auth(stream).await.unwrap();
+        ayssh::server::test_server::handle_scp_upload(&mut io, channel)
+            .await
+            .unwrap()
+    });
+
+    let ssh_opts = ayurl::SshOptions::new()
+        .with_private_key_path(TEST_KEY_PATH)
+        .with_file_mode(0o755);
+
+    let client = ayurl::Client::builder().build();
+    let uri = format!("scp://testuser@{addr}/pk_upload.txt");
+    client
+        .put(&uri)
+        .with_options(ssh_opts)
+        .bytes(upload_data.to_vec())
+        .content_length(upload_data.len() as u64)
+        .await
+        .unwrap();
+
+    let (filename, received_data) = server_task.await.unwrap();
+    assert_eq!(filename, "pk_upload.txt");
+    assert_eq!(received_data, upload_data);
+}
+
+#[tokio::test]
+async fn sftp_download_with_publickey() {
+    let (server, addr) = start_ssh_server().await;
+    let fs = Arc::new(MemoryFs::new());
+    fs.add_file("pk_file.txt", b"sftp publickey content", 0o644);
+    let fs_clone = fs.clone();
+
+    let server_task = tokio::spawn(async move {
+        let stream = server.accept_stream().await.unwrap();
+        let (mut io, channel) = server.handshake_and_auth(stream).await.unwrap();
+        ayssh::server::test_server::run_sftp_server(&mut io, channel, fs_clone)
+            .await
+            .unwrap();
+    });
+
+    let ssh_opts = ayurl::SshOptions::new().with_private_key_path(TEST_KEY_PATH);
+
+    let client = ayurl::Client::builder().build();
+    let uri = format!("sftp://testuser@{addr}/pk_file.txt");
+    let data = client
+        .get(&uri)
+        .with_options(ssh_opts)
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+
+    assert_eq!(data, b"sftp publickey content");
+    let _ = server_task.await;
+}
+
+#[tokio::test]
+async fn sftp_upload_with_publickey() {
+    let (server, addr) = start_ssh_server().await;
+    let fs = Arc::new(MemoryFs::new());
+    let fs_clone = fs.clone();
+
+    let server_task = tokio::spawn(async move {
+        let stream = server.accept_stream().await.unwrap();
+        let (mut io, channel) = server.handshake_and_auth(stream).await.unwrap();
+        ayssh::server::test_server::run_sftp_server(&mut io, channel, fs_clone)
+            .await
+            .unwrap();
+    });
+
+    let ssh_opts = ayurl::SshOptions::new()
+        .with_private_key_path(TEST_KEY_PATH)
+        .with_file_mode(0o600);
+
+    let client = ayurl::Client::builder().build();
+    let uri = format!("sftp://testuser@{addr}/pk_upload.dat");
+    client
+        .put(&uri)
+        .with_options(ssh_opts)
+        .text("sftp publickey upload")
+        .await
+        .unwrap();
+
+    let stored = fs.get_file("pk_upload.dat").or_else(|| fs.get_file("/pk_upload.dat"));
+    assert_eq!(stored.as_deref(), Some(b"sftp publickey upload".as_slice()));
+    let _ = server_task.await;
+}
+
+// === Credential callback test ===
+
+#[tokio::test]
+async fn scp_download_with_credential_callback() {
+    let (server, addr) = start_ssh_server().await;
+    let test_data = b"callback auth data";
+    let test_data_clone = test_data.to_vec();
+
+    let server_task = tokio::spawn(async move {
+        let stream = server.accept_stream().await.unwrap();
+        let (mut io, channel) = server.handshake_and_auth(stream).await.unwrap();
+        ayssh::server::test_server::handle_scp_download(
+            &mut io,
+            channel,
+            "cb.txt",
+            &test_data_clone,
+            0o644,
+        )
+        .await
+        .unwrap();
+    });
+
+    // No password in URL, provide via callback
+    let uri = format!("scp://testuser@{addr}/cb.txt");
+    let data = ayurl::get(&uri)
+        .on_credentials(|_req| {
+            Some(ayurl::Credentials {
+                username: Some("testuser".into()),
+                secret: Some("any-password".into()),
+                ..Default::default()
+            })
+        })
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+
+    assert_eq!(data, test_data);
     let _ = server_task.await;
 }
