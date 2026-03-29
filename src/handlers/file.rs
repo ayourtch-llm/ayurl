@@ -36,17 +36,34 @@ impl SchemeHandler for FileHandler {
         _ctx: &mut TransferContext,
     ) -> Result<u64> {
         let path = Self::url_to_path(uri)?;
-        tracing::debug!(?path, "file handler: opening for write");
+        tracing::debug!(?path, "file handler: opening for write (atomic via temp+rename)");
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let file = tokio::fs::File::create(&path).await?;
-        let mut compat_file = TokioAsyncWriteCompatExt::compat_write(file);
+        // Write to a temporary file in the same directory, then atomically rename.
+        // Same directory ensures rename() doesn't cross filesystem boundaries.
+        let tmp_path = {
+            let mut tmp = path.as_os_str().to_os_string();
+            tmp.push(format!(".tmp.{}", std::process::id()));
+            std::path::PathBuf::from(tmp)
+        };
 
-        let bytes_written = futures::io::copy(&mut body, &mut compat_file).await?;
+        let bytes_written = {
+            let file = tokio::fs::File::create(&tmp_path).await?;
+            let mut compat_file = TokioAsyncWriteCompatExt::compat_write(file);
+            futures::io::copy(&mut body, &mut compat_file).await?
+        };
+
+        // Atomic rename over the target
+        if let Err(e) = tokio::fs::rename(&tmp_path, &path).await {
+            // Clean up the temp file on rename failure
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(e.into());
+        }
+
         tracing::debug!(?path, bytes_written, "file handler: write complete");
         Ok(bytes_written)
     }

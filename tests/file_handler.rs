@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use futures::io::AsyncReadExt;
@@ -184,6 +184,79 @@ async fn put_creates_parent_dirs() {
 
     let contents = std::fs::read_to_string(&path).unwrap();
     assert_eq!(contents, "nested");
+}
+
+/// Verify that concurrent readers never see empty or partial content during a PUT.
+///
+/// Strategy: pre-populate a file with known content, then hammer it with
+/// concurrent PUTs (large payload) while a reader loop keeps reading.
+/// With atomic writes (temp+rename), every read returns either the old
+/// content or the new content — never empty or truncated.
+#[tokio::test]
+async fn put_is_atomic_concurrent_readers_never_see_partial() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("atomic_test.json");
+    let uri = format!("file://{}", path.display());
+
+    // Initial content — something we can validate
+    let initial = "A".repeat(64 * 1024); // 64 KiB of 'A's
+    std::fs::write(&path, &initial).unwrap();
+
+    // New content — different, same size
+    let replacement = "B".repeat(64 * 1024); // 64 KiB of 'B's
+
+    let saw_partial = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // Spawn a reader task that continuously reads the file
+    let reader_path = path.clone();
+    let saw_partial_clone = saw_partial.clone();
+    let stop_clone = stop.clone();
+    let initial_clone = initial.clone();
+    let replacement_clone = replacement.clone();
+    let reader = tokio::spawn(async move {
+        let mut reads = 0u64;
+        while !stop_clone.load(Ordering::Relaxed) {
+            match tokio::fs::read(&reader_path).await {
+                Ok(data) => {
+                    reads += 1;
+                    let is_initial = data == initial_clone.as_bytes();
+                    let is_replacement = data == replacement_clone.as_bytes();
+                    if !is_initial && !is_replacement {
+                        saw_partial_clone.store(true, Ordering::Relaxed);
+                        // Don't break — keep reading to increase confidence
+                    }
+                }
+                Err(_) => {
+                    // File momentarily missing would also be a failure for atomic writes,
+                    // but we don't count it here since rename is atomic on Linux.
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+        reads
+    });
+
+    // Perform many sequential PUTs to maximize the race window
+    for _ in 0..20 {
+        ayurl::put(&uri)
+            .text(replacement.clone())
+            .await
+            .unwrap();
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    let reads = reader.await.unwrap();
+
+    assert!(
+        reads > 0,
+        "reader should have completed at least one read"
+    );
+    assert!(
+        !saw_partial.load(Ordering::Relaxed),
+        "reader saw partial/empty content during PUT — writes are not atomic! ({} reads performed)",
+        reads
+    );
 }
 
 #[tokio::test]
