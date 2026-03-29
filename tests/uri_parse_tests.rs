@@ -384,3 +384,13 @@ fn file_uri_dot_authority_relative_to_cwd() {
     let expected = format!("{}/local/path", cwd.display());
     assert_eq!(u.path(), expected);
 }
+
+#[test]
+fn file_uri_dotdot_authority_relative_to_cwd() {
+    // file://../sibling/file.json → {cwd}/../sibling/file.json
+    let u = ParsedUri::parse("file://../sibling/file.json").unwrap();
+    assert_eq!(u.scheme(), "file");
+    let cwd = std::env::current_dir().unwrap();
+    let expected = format!("{}/../sibling/file.json", cwd.display());
+    assert_eq!(u.path(), expected);
+}

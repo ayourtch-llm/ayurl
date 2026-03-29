@@ -63,10 +63,14 @@ impl ParsedUri {
                 if authority.eq_ignore_ascii_case("localhost") {
                     // RFC 8089: localhost means local machine — strip it
                     path_rest.to_string()
-                } else if authority == "." {
-                    // Non-standard: file://./relative/path — resolve from cwd
+                } else if authority == "." || authority == ".." {
+                    // Non-standard: file://./rel/path or file://../rel/path — resolve from cwd
                     let cwd = std::env::current_dir().unwrap_or_default();
-                    format!("{}{}", cwd.display(), path_rest)
+                    if authority == "." {
+                        format!("{}{path_rest}", cwd.display())
+                    } else {
+                        format!("{}/{authority}{path_rest}", cwd.display())
+                    }
                 } else {
                     // Unknown authority — treat as part of path for best-effort
                     format!("/{authority}{path_rest}")
