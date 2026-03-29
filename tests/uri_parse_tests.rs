@@ -320,3 +320,67 @@ fn file_uri_windows_style() {
     assert_eq!(u.scheme(), "file");
     assert_eq!(u.path(), "/C:/Users/foo");
 }
+
+// === RFC 8089 compliance ===
+
+#[test]
+fn file_uri_localhost_authority_stripped() {
+    // RFC 8089 §2: "localhost" authority means local machine
+    let u = ParsedUri::parse("file://localhost/tmp/foo").unwrap();
+    assert_eq!(u.scheme(), "file");
+    assert_eq!(u.host(), None);
+    assert_eq!(u.path(), "/tmp/foo");
+}
+
+#[test]
+fn file_uri_localhost_case_insensitive() {
+    let u = ParsedUri::parse("file://LOCALHOST/tmp/foo").unwrap();
+    assert_eq!(u.path(), "/tmp/foo");
+    assert_eq!(u.host(), None);
+}
+
+#[test]
+fn file_uri_percent_encoded_space() {
+    // RFC 8089 inherits RFC 3986 percent-encoding
+    let u = ParsedUri::parse("file:///tmp/my%20file.txt").unwrap();
+    assert_eq!(u.path(), "/tmp/my file.txt");
+}
+
+#[test]
+fn file_uri_percent_encoded_special_chars() {
+    let u = ParsedUri::parse("file:///path/%23hash%3Fquery").unwrap();
+    assert_eq!(u.path(), "/path/#hash?query");
+}
+
+#[test]
+fn file_uri_query_parsed() {
+    let u = ParsedUri::parse("file:///tmp/foo?key=value").unwrap();
+    assert_eq!(u.path(), "/tmp/foo");
+    assert_eq!(u.query(), Some("key=value"));
+}
+
+#[test]
+fn file_uri_fragment_parsed() {
+    let u = ParsedUri::parse("file:///tmp/foo#section1").unwrap();
+    assert_eq!(u.path(), "/tmp/foo");
+    assert_eq!(u.fragment(), Some("section1"));
+}
+
+#[test]
+fn file_uri_query_and_fragment_parsed() {
+    let u = ParsedUri::parse("file:///tmp/foo?q=1#frag").unwrap();
+    assert_eq!(u.path(), "/tmp/foo");
+    assert_eq!(u.query(), Some("q=1"));
+    assert_eq!(u.fragment(), Some("frag"));
+}
+
+#[test]
+fn file_uri_dot_authority_relative_to_cwd() {
+    // Non-standard but browser-supported: file://./local/path
+    // Should resolve relative to current directory
+    let u = ParsedUri::parse("file://./local/path").unwrap();
+    assert_eq!(u.scheme(), "file");
+    let cwd = std::env::current_dir().unwrap();
+    let expected = format!("{}/local/path", cwd.display());
+    assert_eq!(u.path(), expected);
+}

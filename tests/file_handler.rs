@@ -260,6 +260,47 @@ async fn put_is_atomic_concurrent_readers_never_see_partial() {
 }
 
 #[tokio::test]
+async fn get_file_with_percent_encoded_space_in_path() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("my file.txt");
+    std::fs::write(&path, "hello spaces").unwrap();
+
+    // Encode the space as %20 in the URI
+    let uri = format!(
+        "file://{}",
+        path.display().to_string().replace(' ', "%20")
+    );
+    let text = ayurl::get(&uri).await.unwrap().text().await.unwrap();
+    assert_eq!(text, "hello spaces");
+}
+
+#[tokio::test]
+async fn put_file_with_percent_encoded_space_in_path() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("my output.txt");
+
+    let uri = format!(
+        "file://{}",
+        path.display().to_string().replace(' ', "%20")
+    );
+    ayurl::put(&uri).text("written with spaces").await.unwrap();
+
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(contents, "written with spaces");
+}
+
+#[tokio::test]
+async fn get_file_via_localhost_authority() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("local.txt");
+    std::fs::write(&path, "via localhost").unwrap();
+
+    let uri = format!("file://localhost{}", path.display());
+    let text = ayurl::get(&uri).await.unwrap().text().await.unwrap();
+    assert_eq!(text, "via localhost");
+}
+
+#[tokio::test]
 async fn explicit_client() {
     let client = ayurl::Client::builder().build();
 

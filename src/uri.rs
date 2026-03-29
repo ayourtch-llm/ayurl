@@ -43,15 +43,42 @@ impl ParsedUri {
 
         let rest = &input[colon_pos + 3..]; // after "://"
 
-        // --- file:// special case: no authority, rest is the path ---
-        // file:///tmp/foo → rest = "/tmp/foo", path = "/tmp/foo"
-        // file:///C:/Users → rest = "/C:/Users", path = "/C:/Users"
+        // --- file:// special case (RFC 8089) ---
+        // file:///tmp/foo       → path = "/tmp/foo"
+        // file:///C:/Users      → path = "/C:/Users"
+        // file://localhost/tmp  → path = "/tmp" (localhost = local machine)
+        // file://./rel/path     → path = "{cwd}/rel/path" (non-standard, browser compat)
+        // file:///a%20b         → path = "/a b" (percent-decoded)
+        // file:///p?q#f         → path = "/p", query = "q", fragment = "f"
         if scheme == "file" {
-            let path = if rest.starts_with('/') {
+            let rest = if rest.starts_with('/') {
                 rest.to_string()
             } else {
-                format!("/{rest}")
+                // There's an authority component before the path.
+                // Split at the first '/' to separate authority from path.
+                let (authority, path_rest) = match rest.find('/') {
+                    Some(pos) => (&rest[..pos], &rest[pos..]),
+                    None => (rest, ""),
+                };
+                if authority.eq_ignore_ascii_case("localhost") {
+                    // RFC 8089: localhost means local machine — strip it
+                    path_rest.to_string()
+                } else if authority == "." {
+                    // Non-standard: file://./relative/path — resolve from cwd
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    format!("{}{}", cwd.display(), path_rest)
+                } else {
+                    // Unknown authority — treat as part of path for best-effort
+                    format!("/{authority}{path_rest}")
+                }
             };
+
+            // Parse query and fragment (RFC 3986)
+            let (path_str, query, fragment) = parse_path_query_fragment(&rest);
+
+            // Percent-decode the path
+            let path = percent_decode(&path_str);
+
             return Ok(Self {
                 scheme: scheme.to_string(),
                 username: None,
@@ -59,8 +86,8 @@ impl ParsedUri {
                 host: None,
                 port: None,
                 path,
-                query: None,
-                fragment: None,
+                query,
+                fragment,
             });
         }
 
